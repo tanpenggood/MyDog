@@ -37,4 +37,11 @@ public record ConnectionProfile(
     public ConnectionProfile withEncryptedPassword(String enc) {
         return new ConnectionProfile(id, name, host, port, user, enc, defaultSchema, sslMode, advancedProps);
     }
+
+    /** What the combo box and the object tree root show. */
+    public String displayLabel() {
+        return name == null || name.isBlank()
+                ? user + "@" + host + ":" + port
+                : name + " (" + host + ":" + port + ")";
+    }
 }

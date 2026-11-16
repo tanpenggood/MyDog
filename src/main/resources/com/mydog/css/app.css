@@ -19,3 +19,24 @@
     -fx-text-fill: -color-danger-emphasis;
     -fx-wrap-text: true;
 }
+
+/* Editors and DDL views use a monospaced font */
+.sql-editor, .ddl-view, .message-view {
+    -fx-font-family: "Menlo", "Consolas", "DejaVu Sans Mono", monospace;
+    -fx-font-size: 13px;
+}
+
+/* RichTextFX styles spans on the Text nodes, so -fx-fill (not -fx-text-fill) */
+.sql-editor .sql-keyword { -fx-fill: #6a1b9a; -fx-font-weight: bold; }
+.sql-editor .sql-string  { -fx-fill: #0b8043; }
+.sql-editor .sql-comment { -fx-fill: #8a8a8a; -fx-font-style: italic; }
+.sql-editor .sql-number  { -fx-fill: #1565c0; }
+.sql-editor .sql-quoted  { -fx-fill: #b26a00; }
+
+.workspace {
+    -fx-tab-min-height: 28px;
+}
+
+.tree-view {
+    -fx-show-root-lines: true;
+}

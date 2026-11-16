@@ -66,6 +66,7 @@ public final class AppContext {
     // ---- active session (M1: single active connection; multi-session in M2) ----
 
     private ConnectionProfile activeProfile;
+    private com.mydog.metadata.model.TableDef activeTable;
 
     public synchronized ConnectionProfile activeProfile() { return activeProfile; }
 
@@ -73,6 +74,24 @@ public final class AppContext {
         this.activeProfile = p;
         Consumer<ConnectionProfile> hook = onSessionChanged;
         if (hook != null) hook.accept(p);
+    }
+
+    public synchronized com.mydog.metadata.model.TableDef activeTable() { return activeTable; }
+
+    public synchronized void setActiveTable(com.mydog.metadata.model.TableDef t) { this.activeTable = t; }
+
+    /**
+     * Profile to use for a schema: a saved connection whose default schema matches,
+     * otherwise the active one. Lets the tree browse databases the active connection
+     * can see but did not select.
+     */
+    public synchronized ConnectionProfile profileFor(String schema) {
+        if (schema != null) {
+            for (ConnectionProfile p : connections.all()) {
+                if (schema.equalsIgnoreCase(p.defaultSchema())) return p;
+            }
+        }
+        return activeProfile;
     }
 
     public void setOnSessionChanged(Consumer<ConnectionProfile> hook) {
