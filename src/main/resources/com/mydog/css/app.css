@@ -1,0 +1,21 @@
+/* MyDog app styles (on top of AtlantaFX) */
+
+.welcome {
+    -fx-font-size: 16px;
+    -fx-text-fill: -color-fg-muted;
+}
+
+.status-bar {
+    -fx-background-color: -color-bg-subtle;
+    -fx-border-color: -color-border-default;
+    -fx-border-width: 1 0 0 0;
+}
+
+.test-ok {
+    -fx-text-fill: -color-success-emphasis;
+}
+
+.test-fail {
+    -fx-text-fill: -color-danger-emphasis;
+    -fx-wrap-text: true;
+}

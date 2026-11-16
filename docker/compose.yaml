@@ -1,0 +1,42 @@
+services:
+  mysql-src:
+    image: mysql:8.0
+    container_name: mydog-mysql-src
+    ports:
+      - "3307:3306"
+    environment:
+      MYSQL_ROOT_PASSWORD: root123
+    command:
+      - --character-set-server=utf8mb4
+      - --collation-server=utf8mb4_0900_ai_ci
+    volumes:
+      - mydog-src-data:/var/lib/mysql
+      - ./init/src:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-proot123"]
+      interval: 3s
+      timeout: 3s
+      retries: 30
+
+  mysql-dst:
+    image: mysql:8.0
+    container_name: mydog-mysql-dst
+    ports:
+      - "3308:3306"
+    environment:
+      MYSQL_ROOT_PASSWORD: root123
+    command:
+      - --character-set-server=utf8mb4
+      - --collation-server=utf8mb4_0900_ai_ci
+    volumes:
+      - mydog-dst-data:/var/lib/mysql
+      - ./init/dst:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-proot123"]
+      interval: 3s
+      timeout: 3s
+      retries: 30
+
+volumes:
+  mydog-src-data:
+  mydog-dst-data:
