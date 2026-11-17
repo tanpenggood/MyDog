@@ -1,0 +1,63 @@
+# MyDog test pipeline.
+#
+# Why this exists separately from release.yml: the integration tests are tagged
+# "docker" and need the two MySQL sandboxes on 127.0.0.1:3307/3308. Without them
+# every IT aborts itself (Assumptions.abort) so a bare `verify` still passes —
+# which is safe, but means the sync engine and the sync wizard would never
+# actually be exercised in CI. Here the same docker/compose.yaml the project
+# documents is brought up for real, so all 24 integration tests run.
+#
+# The display: SyncWizardUiIT presses real buttons in a real JavaFX dialog.
+# JavaFX's Linux glass back end needs X11 + GTK, so the whole build runs under
+# xvfb-run. Rendering stays software (-Dmydog.test.prism.order=sw, the pom's
+# default for test forks) so no GPU is involved.
+name: test
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '25'
+          cache: maven
+
+      - name: Install the X server and the libraries JavaFX links against
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends xvfb libgtk-3-0 libgl1 libxxf86vm1
+
+      - name: Start the two MySQL sandboxes (3307 source, 3308 target)
+        working-directory: docker
+        run: docker compose up -d --wait
+
+      - name: Unit and integration tests, on a virtual display
+        run: xvfb-run -a ./mvnw -B -ntp verify
+
+      # A red build should arrive with the transcripts attached: these are the
+      # files that say which assertion failed and what the scene looked like.
+      - name: Upload test reports
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-reports
+          path: |
+            target/surefire-reports
+            target/failsafe-reports
+
+      - name: Sandbox logs
+        if: failure()
+        working-directory: docker
+        run: docker compose logs --tail=200

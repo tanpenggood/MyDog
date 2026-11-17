@@ -1,8 +1,8 @@
 # MyDog 开发进度看板
 
-> 最后更新：2026-11-17 08:50 · 分支 `main` · 状态 **M4 完成（向导 + 依赖拒绝），M5 打包/CI 进行中**
+> 最后更新：2026-11-17 09:20 · 分支 `main` · 状态 **M4 完成（`8743e02`）· M5 代码与 CI 就绪（`f36363c`），剩手工验收 + CI 实跑（需推 tag）**
 
-整体进度：`M0 ████████████ 100% · M1 ████████████ 100% · M2 ████████████ 100% · M3 ████████████ 100% · M4 ████████████ 100% · M5 ███░░░░░░░░░ 25%`
+整体进度：`M0 ████████████ 100% · M1 ████████████ 100% · M2 ████████████ 100% · M3 ████████████ 100% · M4 ████████████ 100% · M5 ██████████░░ 80%`
 
 完整设计计划（架构/选型理由/同步引擎设计）见 `~/.claude/plans/mysql-windows-macos-linux-sql-distributed-engelbart.md`。
 
@@ -15,9 +15,9 @@
 | **M0 环境** | JDK 25 LTS + Docker + compose 双 MySQL | ✅ **完成** | `java -version`=25.0.2；3307/3308 healthy |
 | **M1 骨架** | pom / 包结构 / i18n 中英切换 / 连接管理（CRUD+测试+加密） | ✅ **完成**（已 commit `5290fae`） | 应用可跑；连 docker 库测试成功；密码密文；语言全量切换 |
 | **M2 浏览编辑** | 对象树 / SQL 编辑器（RichTextFX）/ 数据查看器 / 结构查看器 | ✅ **完成** | 对源库跑通浏览、执行 SQL、看数据与 DDL |
-| **M3 同步引擎（无 UI）** | metadata 解析 + DdlNormalizer + Comparator + DataDiffEngine + SyncPlan | ✅ **完成** | `./mvnw verify` 绿；同步后两侧 SHOW CREATE/CHECKSUM/行数一致（9 个端到端 IT 证明） |
+| **M3 同步引擎（无 UI）** | metadata 解析 + DdlNormalizer + Comparator + DataDiffEngine + SyncPlan | ✅ **完成** | `./mvnw verify` 绿；同步后两侧 SHOW CREATE/CHECKSUM/行数一致（现 11 个端到端 IT 证明） |
 | **M4 同步向导 UI** | 五步向导：源目标 → 范围 → 对比 → 预览勾选/导出 → 执行/取消/报告 | ✅ **完成** | 自动化点击全流程绿（`SyncWizardUiIT` 走完 5 步 + 返回 + 第二轮结构/DROP）；`./mvnw verify` 121 单测 + 24 IT 全绿 |
-| **M5 打包发布** | 图标 / jpackage dmg / GitHub Actions(win+linux) / README | 🟡 **进行中** | 三平台产物可安装启动，CI 绿（本地 dmg 已产出；CI test job 待补） |
+| **M5 打包发布** | 图标 / jpackage dmg / GitHub Actions(win+linux) / README | 🟡 **进行中 80%** | 本机 dmg 挂载并启动成功；CI 两个 workflow 已就位（test.yml 真跑 IT，release.yml 三平台产物）；win/linux 产物与 CI 绿灯需推 tag 后在 Actions 里确认 |
 
 ---
 
@@ -133,11 +133,13 @@ JAVA_HOME=.../openjdk-25.0.2/Contents/Home ./mvnw javafx:run -Dmydog.prism.order
 
 ## 下一步：M5 打包发布收尾
 
-1. ✅ 图标（`src/main/packaging/`：icns/ico/512px + `make_icons.py` 再生成）、jpackage 三平台 profile、`.github/workflows/release.yml`（win msi / linux deb / mac dmg 原生 runner + artifact）
-2. ⬜ **CI test job**：ubuntu runner + 两个 MySQL service 容器（3307/3308）+ xvfb，让 `@Tag("docker")` 的 24 个集成测试（含向导点击测试）在 CI 真跑，而不是在 release job 里被 skip
-3. ⬜ README 校对：`sync.*` 向导入口（工具菜单 / 树右键）、`mydog.test.prism.order`、依赖拒绝规则（视图基表不在范围内会被跳过并出警告）、新测试规模
-4. ⬜ 手工验收（需要用户）：语言切换、五步向导全路径、取消、导出脚本/报告
-5. ⬜ 打 tag 出第一版安装包；未签名 dmg 的右键打开步骤已在 README
+1. ✅ **图标**：`src/main/packaging/mydog.{icns,ico,png}` + `make_icons.py`（纯标准库重绘，本机实跑一次可复现，icns 字节数一致）
+2. ✅ **jpackage 三平台 profile**（pom）：mac dmg / win msi（`--win-upgrade-uuid` 固定，升级可覆盖安装）/ linux deb；`--input` 统一 `target/app`，图标走 `--icon` 绝对路径
+3. ✅ **dmg 实测**（我自己验，不采信汇报）：`target/dist/MyDog-1.0.0.dmg` 挂载后 `MyDog.app/Contents/app/MyDog.cfg` 里 `--module-path=$APPDIR` + `--add-modules=javafx.controls` 正确展开，改 cfg 加 `-Dprism.order=sw` 后从 `Contents/MacOS/MyDog` 直接启动，20 秒无异常（只有 sw 管线下的 `CVDisplayLink` 无害告警）
+4. ✅ **CI test job**：`.github/workflows/test.yml` —— ubuntu runner + `docker compose up -d --wait` 起真沙箱 + `xvfb-run`，24 个集成测试（含向导点击）在 CI 真跑；失败时上传 surefire/failsafe 报告与沙箱日志。release.yml 的三个打包任务改为 `-DskipTests`（测试归 test.yml），并给 Windows 任务加 WiX 安装 + PATH 步骤
+5. ✅ README 校对：向导入口、两条同步安全默认、依赖拒绝规则、`mydog.prism.order` 与 `mydog.test.prism.order` 的分工、单跑某 IT 类要先 `test-compile` 的坑、Windows msi 的 WiX 前置
+6. ⬜ 手工验收（需要用户）：语言切换、五步向导全路径、取消、导出脚本/报告
+7. ⬜ 打 tag 出第一版三平台安装包（CI 产物）；未签名 dmg 的右键打开步骤已在 README
 
 ### M4 遗留的已知边界（v1 有意不做）
 

@@ -1,0 +1,87 @@
+# MyDog installer pipeline (M5).
+#
+# Each job runs on a native runner because jpackage cannot cross-build: the
+# Windows job produces the .msi, the Linux job the .deb, the macOS job the .dmg.
+# The openjfx dependency in pom.xml carries no OS classifier on purpose — its
+# POM activates the platform profile of the *build* machine, so every installer
+# embeds exactly its own platform's JavaFX jars.
+#
+# JDK: Eclipse Temurin 25 (LTS). Verified available for GA on 2026-11-17 via
+# https://api.adoptium.net/v3/info/available_releases (25 is in both
+# available_releases and available_lts_releases; windows/linux x64 and mac
+# x64/aarch64 binaries all resolve at /v3/assets/latest/25/hotspot).
+#
+# Tests: packaging jobs run `verify -DskipTests` — the suite belongs to
+# test.yml, which brings up the MySQL sandboxes and a virtual display so the
+# integration tests (including the wizard's click-through) really run. Running
+# 24 skipped ITs three times over here would prove nothing twice.
+#
+# macOS note: macos-latest runners are Apple Silicon, so the dmg is an
+# arm64 build for Apple Silicon Macs. It is unsigned — see README for the
+# right-click → Open first launch. Intel (x64) dmg + universal binary are v2
+# items.
+name: release
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  package:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            profile: native-win
+            artifact: MyDog-windows-msi
+            dist_glob: target/dist/*.msi
+          - os: ubuntu-latest
+            profile: native-linux
+            artifact: MyDog-linux-deb
+            dist_glob: target/dist/*.deb
+          - os: macos-latest
+            profile: native-mac
+            artifact: MyDog-macos-dmg
+            dist_glob: target/dist/*.dmg
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '25'
+          cache: maven
+
+      # jpackage shells out to the WiX toolset to build an .msi; the runner
+      # image does not guarantee it is on PATH, so install it and publish both
+      # its bin and its machine-level WIX variable to the rest of the job.
+      - name: Install WiX toolset (Windows .msi only)
+        if: runner.os == 'Windows'
+        shell: powershell
+        run: |
+          choco install wixtoolset-sdk -y
+          $bin = (Get-ChildItem 'C:\Program Files (x86)\WiX Toolset *\bin' | Select-Object -First 1).FullName
+          echo "$bin" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+          echo "WIX=$bin\..\" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+
+      - name: Build installer (macOS / Linux)
+        if: runner.os != 'Windows'
+        run: ./mvnw -B -ntp -P ${{ matrix.profile }} verify -DskipTests
+
+      - name: Build installer (Windows)
+        if: runner.os == 'Windows'
+        shell: cmd
+        run: mvnw.cmd -B -ntp -P ${{ matrix.profile }} verify -DskipTests
+
+      - name: Upload installer
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact }}
+          path: ${{ matrix.dist_glob }}
+          if-no-files-found: error
