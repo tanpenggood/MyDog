@@ -9,6 +9,7 @@ import com.mydog.metadata.model.RoutineDef;
 import com.mydog.metadata.model.TableDef;
 import com.mydog.metadata.model.TriggerDef;
 import com.mydog.metadata.model.ViewDef;
+import com.mydog.ui.sync.SyncWizard;
 import com.mydog.util.SqlNames;
 import javafx.application.Platform;
 import javafx.concurrent.Task;
@@ -77,6 +78,25 @@ public final class ObjectTreeController {
 
     public TreeView<Object> view() {
         return tree;
+    }
+
+    /**
+     * The database the selection belongs to, or null when nothing schema-shaped is selected.
+     *
+     * <p>Used to preselect the source side of the sync wizard from wherever the user is in the tree.
+     */
+    public String focusedSchema() {
+        Object node = tree.getSelectionModel().getSelectedItem() == null ? null
+                : tree.getSelectionModel().getSelectedItem().getValue();
+        return switch (node) {
+            case SchemaNode sn -> sn.name();
+            case CategoryNode cn -> cn.schema();
+            case TableNode tn -> tn.table().schema();
+            case ViewNode vn -> vn.view().schema();
+            case RoutineNode rn -> rn.routine().schema();
+            case TriggerNode tn -> tn.trigger().schema();
+            case null, default -> null;
+        };
     }
 
     /** Rebuild the schema level for the given profile (called when a connection is picked). */
@@ -210,8 +230,11 @@ public final class ObjectTreeController {
             menu.getItems().add(item(I18n.tr("tree.viewStructure"),
                     () -> workspace.openStructureTab(tr.trigger().name(), tr.trigger().createStatement())));
         } else if (node instanceof SchemaNode sn) {
-            menu.getItems().add(item(I18n.tr("tree.newQuery"),
-                    () -> workspace.openEditorText("SELECT NOW(); -- " + sn.name())));
+            menu.getItems().addAll(
+                    item(I18n.tr("tree.newQuery"),
+                            () -> workspace.openEditorText("SELECT NOW(); -- " + sn.name())),
+                    item(I18n.tr("tree.sync"),
+                            () -> SyncWizard.show(view().getScene().getWindow(), ctx, sn.name())));
         }
         if (!menu.getItems().isEmpty()) {
             menu.getItems().add(new SeparatorMenuItem());

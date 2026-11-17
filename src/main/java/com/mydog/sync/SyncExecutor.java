@@ -12,6 +12,7 @@ import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 
 /**
  * Applies a {@link SyncPlan} to the target server.
@@ -80,6 +81,12 @@ public final class SyncExecutor {
             st.execute("SET FOREIGN_KEY_CHECKS = 0");
         }
 
+        // The tables the target will have as the run goes along. A view or trigger cannot be created
+        // over a table that is not there, MySQL rejects it, and DDL does not roll back — so an object
+        // whose base table the user left unticked is skipped and reported, instead of failing the run
+        // after everything before it was already applied.
+        Set<String> tables = trackedTables(plan, actions);
+
         boolean stopped = false;
         int index = 0;
         for (SyncAction action : actions) {
@@ -92,6 +99,20 @@ public final class SyncExecutor {
             if (cancelled.isCancelled()) {
                 action.setStatus(SyncAction.Status.SKIPPED);
                 action.setMessage("cancelled");
+                continue;
+            }
+            if (action.statements().isEmpty() && !action.hasData()) {
+                // a ticked "skipped" row (the preview lets one be ticked) would otherwise be
+                // reported as applied when there is no statement in it to apply
+                action.setStatus(SyncAction.Status.SKIPPED);
+                action.setMessage("nothing to apply");
+                continue;
+            }
+            String missing = missingBase(action, tables);
+            if (missing != null) {
+                action.setStatus(SyncAction.Status.SKIPPED);
+                action.setMessage("base table " + missing + " is not applied by this run");
+                listener.message("SKIP " + action.object() + ": " + action.message());
                 continue;
             }
             listener.started(action, index, actions.size());
@@ -119,6 +140,14 @@ public final class SyncExecutor {
                 totals = totals.plus(counts);
                 action.setDataCounts(counts);
                 action.setStatus(SyncAction.Status.DONE);
+                if (tables != null && action.object().kind() == ObjectKind.TABLE) {
+                    // only now: a table that failed to be created must not be assumed present
+                    switch (action.kind()) {
+                        case DROP -> tables.remove(action.object().name());
+                        case CREATE -> tables.add(action.object().name());
+                        default -> { }
+                    }
+                }
                 listener.finished(action, counts, System.currentTimeMillis() - actionStart);
             } catch (Exception e) {
                 try {
@@ -141,6 +170,26 @@ public final class SyncExecutor {
         target.setAutoCommit(originalAutoCommit);
         return new SyncReport(actions, totals, System.currentTimeMillis() - startedAt,
                 cancelled.isCancelled(), errors);
+    }
+
+    /**
+     * The target's table names, but only for a run that has an object depending on one: a data-only
+     * sync should not pay a metadata query.
+     */
+    private Set<String> trackedTables(SyncPlan plan, List<SyncAction> actions) throws SQLException {
+        boolean needed = actions.stream().anyMatch(a -> !a.dependsOn().isEmpty());
+        if (!needed) return null;
+        Set<String> names = new java.util.TreeSet<>(String.CASE_INSENSITIVE_ORDER);
+        names.addAll(new MySqlMetadataReader(target).listTableNames(plan.targetLabel()));
+        return names;
+    }
+
+    private static String missingBase(SyncAction action, Set<String> tables) {
+        if (tables == null || action.dependsOn().isEmpty()) return null;
+        for (String name : action.dependsOn()) {
+            if (!tables.contains(name)) return name;
+        }
+        return null;
     }
 
     /** Batches INSERT / UPDATE / DELETE for one table and flushes at chunk boundaries. */

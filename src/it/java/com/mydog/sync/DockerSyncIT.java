@@ -141,6 +141,52 @@ class DockerSyncIT {
         assertThat(action(plan, ObjectKind.VIEW, "v_active", SyncAction.Kind.CREATE)).isNotNull();
     }
 
+    /**
+     * MySQL refuses to create a view over a table that is not there, and it refuses only when the
+     * statement runs — by which time the rest of the plan is already applied and DDL cannot be rolled
+     * back. So a plan whose scope leaves out a view's base table says so while it is still a plan.
+     */
+    @Test
+    void aViewWhoseBaseTableIsNotProvidedIsPlannedAsASkipWithAWarning() throws Exception {
+        try (Connection c = openTarget()) {
+            // v_active reads from t_users: gone from the target, and out of this plan's scope
+            exec(c, "DROP TABLE IF EXISTS `" + DST + "`.`t_users`");
+        }
+        SyncScope viewOnly = new SyncScope(Set.of("nothing_of_mine"), Set.of("v_active"),
+                Set.of(), Set.of(), Set.of());
+
+        SyncPlan plan = comparator(BOTH).compare(viewOnly);
+
+        assertThat(action(plan, ObjectKind.VIEW, "v_active", SyncAction.Kind.CREATE)).isNull();
+        assertThat(action(plan, ObjectKind.VIEW, "v_active", SyncAction.Kind.SKIP)).isNotNull();
+        assertThat(plan.warnings()).anyMatch(w -> w.contains("v_active") && w.contains("t_users"));
+
+        SyncReport report = execute(plan, BOTH);
+        assertThat(report.errors()).isEmpty();
+        assertThat(count(openTarget(), DST, "SELECT COUNT(*) FROM information_schema.tables"
+                + " WHERE table_schema = '" + DST + "' AND table_name = 'v_active'"
+                + " AND table_type = 'VIEW'")).isZero();
+    }
+
+    /**
+     * The same rule one level further: a trigger is attached to exactly one table, named in the
+     * metadata rather than parsed out of SQL, and MySQL rejects it over a missing table too.
+     */
+    @Test
+    void aTriggerWhoseTableIsNotProvidedIsPlannedAsASkip() throws Exception {
+        try (Connection c = openTarget()) {
+            exec(c, "DROP TABLE IF EXISTS `" + DST + "`.`t_users`");
+        }
+        SyncScope triggersOnly = new SyncScope(Set.of("nothing_of_mine"), Set.of("nothing_of_mine"),
+                Set.of(), Set.of(), Set.of("trg_touch"));
+
+        SyncPlan plan = comparator(BOTH).compare(triggersOnly);
+
+        assertThat(action(plan, ObjectKind.TRIGGER, "trg_touch", SyncAction.Kind.CREATE)).isNull();
+        assertThat(action(plan, ObjectKind.TRIGGER, "trg_touch", SyncAction.Kind.SKIP)).isNotNull();
+        assertThat(execute(plan, BOTH).errors()).isEmpty();
+    }
+
     // ------------------------------------------------------------------ execution
 
     @Test

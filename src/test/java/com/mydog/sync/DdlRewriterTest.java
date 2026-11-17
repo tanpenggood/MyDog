@@ -87,4 +87,41 @@ class DdlRewriterTest {
         assertThat(DdlRewriter.retargetSchema(null, "shop", "s2")).isNull();
         assertThat(DdlRewriter.retargetSchema("", "shop", "s2")).isEmpty();
     }
+
+    // ---------------------------------------------------------------- readsFrom
+
+    @Test
+    void findsTheTablesAViewReads() {
+        String sql = "select `shop`.`u`.`id`, o.total from users u "
+                + "join `orders` o on o.uid = u.id left join payouts p on p.id = u.id";
+
+        assertThat(DdlRewriter.readsFrom(sql, java.util.List.of("users", "orders", "payouts"), "shop"))
+                .containsExactly("users", "orders", "payouts");
+    }
+
+    @Test
+    void ignoresNamesThatAreNotTablesAndQualifiersOfAnotherSchema() {
+        String sql = "SELECT a FROM audit.log l JOIN shop.users u ON u.id = l.id";
+
+        // `audit`.`log` is another schema's table — not this sync's business; `audit` itself is not a
+        // table here, and `users` is qualified by the local schema so it counts
+        assertThat(DdlRewriter.readsFrom(sql, java.util.List.of("users", "audit", "log"), "shop"))
+                .containsExactly("users");
+    }
+
+    @Test
+    void doesNotReadFromStringsCommentsOrDerivedTables() {
+        String sql = "SELECT 'from orders' AS txt /* join payouts */ , `weird``name`.x "
+                + "FROM (SELECT id FROM log) d";
+
+        assertThat(DdlRewriter.readsFrom(sql, java.util.List.of("orders", "payouts", "log"), "shop"))
+                .containsExactly("log");
+    }
+
+    @Test
+    void returnsNothingForNullOrEmptyOrNoCandidates() {
+        assertThat(DdlRewriter.readsFrom(null, java.util.List.of("t"), "shop")).isEmpty();
+        assertThat(DdlRewriter.readsFrom("SELECT 1", java.util.List.of("t"), "shop")).isEmpty();
+        assertThat(DdlRewriter.readsFrom("SELECT 1 FROM t", java.util.List.<String>of(), "shop")).isEmpty();
+    }
 }

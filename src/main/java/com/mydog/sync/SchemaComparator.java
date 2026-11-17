@@ -17,6 +17,7 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.Set;
 
 /**
  * Builds the list of changes that would turn the target schema into a copy of the source one.
@@ -138,9 +139,10 @@ public final class SchemaComparator {
 
             compareTables(sr, tr, src, dst, scope, actions, warnings);
             if (options.wantsStructure()) {
-                compareViews(sr, tr, scope, actions, warnings);
+                TableContext tables = tableContext(sr, tr, actions);
+                compareViews(sr, tr, scope, tables, actions, warnings);
                 compareRoutines(sr, tr, scope, actions, warnings);
-                compareTriggers(sr, tr, scope, actions, warnings);
+                compareTriggers(sr, tr, scope, tables, actions, warnings);
             }
         }
         return new SyncPlan(sourceSchema, targetSchema, actions, warnings);
@@ -317,7 +319,8 @@ public final class SchemaComparator {
     // ------------------------------------------------------------------ views
 
     private void compareViews(MySqlMetadataReader sr, MySqlMetadataReader tr, SyncScope scope,
-                              List<SyncAction> actions, List<String> warnings) throws SQLException {
+                              TableContext tables, List<SyncAction> actions, List<String> warnings)
+            throws SQLException {
         Map<String, ViewDef> source = new LinkedHashMap<>();
         for (ViewDef v : sr.listViews(sourceSchema)) {
             if (scope.includes(ObjectKind.VIEW, v.name())) source.put(lower(v.name()), v);
@@ -330,14 +333,33 @@ public final class SchemaComparator {
             ObjectRef ref = new ObjectRef(ObjectKind.VIEW, targetSchema, s.name());
             ViewDef t = target.remove(e.getKey());
             String create = portable(s.createStatement()) + ";";
+            List<String> ddl;
+            SyncAction.Kind kind;
+            String detail;
             if (t == null) {
-                actions.add(SyncAction.ddl(ref, SyncAction.Kind.CREATE, List.of(create),
-                        "view missing on target"));
+                kind = SyncAction.Kind.CREATE;
+                ddl = List.of(create);
+                detail = "view missing on target";
             } else if (!normalizedEquals(s.createStatement(), t.createStatement())) {
                 // MySQL has no ALTER VIEW that can change the column list: replace the object.
-                actions.add(SyncAction.ddl(ref, SyncAction.Kind.ALTER,
-                        List.of("DROP VIEW IF EXISTS " + target(s.name()) + ";", create),
-                        "view definition differs"));
+                kind = SyncAction.Kind.ALTER;
+                ddl = List.of("DROP VIEW IF EXISTS " + target(s.name()) + ";", create);
+                detail = "view definition differs";
+            } else {
+                continue;
+            }
+            Set<String> base = DdlRewriter.readsFrom(s.createStatement(), tables.names(), targetSchema);
+            String missing = firstMissing(base, tables.afterPlan());
+            if (missing != null) {
+                // MySQL refuses a view over a table that is not there, and DDL does not roll back, so
+                // a sync that leaves a table out has to say so about its views in the preview instead
+                // of failing once everything else is already applied.
+                actions.add(SyncAction.skipped(ref, "base table " + missing
+                        + " is neither on the target nor part of this sync"));
+                warnings.add(ref + ": not created, it reads from table " + missing
+                        + " which this sync does not provide");
+            } else {
+                actions.add(SyncAction.ddl(ref, kind, ddl, detail, base));
             }
         }
         dropExtraneous(target.values(), scope, ObjectKind.VIEW, ViewDef::name,
@@ -395,7 +417,8 @@ public final class SchemaComparator {
     // ------------------------------------------------------------------ triggers
 
     private void compareTriggers(MySqlMetadataReader sr, MySqlMetadataReader tr, SyncScope scope,
-                                 List<SyncAction> actions, List<String> warnings) throws SQLException {
+                                 TableContext tables, List<SyncAction> actions, List<String> warnings)
+            throws SQLException {
         Map<String, TriggerDef> source = new LinkedHashMap<>();
         for (TriggerDef t : sr.listTriggers(sourceSchema)) {
             if (scope.includes(ObjectKind.TRIGGER, t.name())) source.put(lower(t.name()), t);
@@ -408,13 +431,23 @@ public final class SchemaComparator {
             ObjectRef ref = new ObjectRef(ObjectKind.TRIGGER, targetSchema, s.name());
             TriggerDef t = target.remove(e.getKey());
             String create = portable(s.createStatement()) + ";";
-            if (t == null) {
-                actions.add(SyncAction.ddl(ref, SyncAction.Kind.CREATE, List.of(create),
-                        "trigger missing on target"));
-            } else if (!normalizedEquals(s.createStatement(), t.createStatement())) {
-                actions.add(SyncAction.ddl(ref, SyncAction.Kind.ALTER,
-                        List.of("DROP TRIGGER IF EXISTS " + target(s.name()) + ";", create),
-                        "trigger body differs"));
+            // a trigger's table is known exactly, no parsing needed
+            Set<String> base = s.table() == null || s.table().isEmpty()
+                    ? Set.of() : Set.of(s.table());
+            if (t == null || !normalizedEquals(s.createStatement(), t.createStatement())) {
+                String missing = firstMissing(base, tables.afterPlan());
+                if (missing != null) {
+                    actions.add(SyncAction.skipped(ref, "table " + missing
+                            + " it fires on is neither on the target nor part of this sync"));
+                    warnings.add(ref + ": not created, its table " + missing
+                            + " is not provided by this sync");
+                } else {
+                    actions.add(SyncAction.ddl(ref, t == null
+                            ? SyncAction.Kind.CREATE : SyncAction.Kind.ALTER,
+                            t == null ? List.of(create)
+                                    : List.of("DROP TRIGGER IF EXISTS " + target(s.name()) + ";", create),
+                            t == null ? "trigger missing on target" : "trigger body differs", base));
+                }
             } else if (!s.table().equalsIgnoreCase(t.table())) {
                 warnings.add(ref + ": trigger " + s.name() + " is attached to " + s.table()
                         + " on the source but " + t.table() + " on the target");
@@ -425,6 +458,45 @@ public final class SchemaComparator {
     }
 
     // ------------------------------------------------------------------ helpers
+
+    /**
+     * Table names on either side, plus the ones that will exist on the target after this plan's table
+     * phase — what views and triggers have to be checked against before they can be created.
+     */
+    private record TableContext(Set<String> names, Set<String> afterPlan) {
+    }
+
+    private TableContext tableContext(MySqlMetadataReader sr, MySqlMetadataReader tr,
+                                      List<SyncAction> actions) throws SQLException {
+        List<String> onTarget = tr.listTableNames(targetSchema);
+        Set<String> names = caseInsensitive();
+        names.addAll(onTarget);
+        names.addAll(sr.listTableNames(sourceSchema));
+
+        Set<String> afterPlan = caseInsensitive();
+        afterPlan.addAll(onTarget);
+        for (SyncAction a : actions) {
+            if (a.object().kind() != ObjectKind.TABLE || !a.isSelected()) continue;
+            switch (a.kind()) {
+                case DROP -> afterPlan.remove(a.object().name());
+                case CREATE -> afterPlan.add(a.object().name());
+                default -> { }
+            }
+        }
+        return new TableContext(names, afterPlan);
+    }
+
+    /** The first of {@code need} that {@code have} does not contain, or null when all of them do. */
+    private static String firstMissing(Set<String> need, Set<String> have) {
+        for (String name : need) {
+            if (!have.contains(name)) return name;
+        }
+        return null;
+    }
+
+    private static Set<String> caseInsensitive() {
+        return new java.util.TreeSet<>(String.CASE_INSENSITIVE_ORDER);
+    }
 
     /** Target-only objects of one kind, when the user opted into destructive cleanup. */
     private <T> void dropExtraneous(Collection<T> onlyOnTarget, SyncScope scope, ObjectKind kind,

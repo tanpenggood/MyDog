@@ -1,6 +1,9 @@
 package com.mydog.sync;
 
+import java.util.Collection;
+import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Set;
 
 /**
  * One unit of work in a plan: DDL statements for an object, a streaming data diff, or both.
@@ -20,6 +23,12 @@ public final class SyncAction {
     private final DataProducer dataProducer;
     private final String detail;
     private final boolean upsert;
+    /**
+     * Tables in the target schema this object reads from — a view's base tables, a trigger's one
+     * table. Empty when nothing was found. The executor will not try to create the object while one
+     * of them is missing, because MySQL rejects it and DDL does not roll back.
+     */
+    private final Set<String> dependsOn;
 
     private boolean selected;
     private Status status = Status.PENDING;
@@ -27,7 +36,8 @@ public final class SyncAction {
     private String message;
 
     private SyncAction(ObjectRef object, Kind kind, List<String> statements,
-                       DataProducer dataProducer, String detail, boolean selected, boolean upsert) {
+                       DataProducer dataProducer, String detail, boolean selected, boolean upsert,
+                       Collection<String> dependsOn) {
         this.object = object;
         this.kind = kind;
         this.statements = List.copyOf(statements);
@@ -35,10 +45,17 @@ public final class SyncAction {
         this.detail = detail;
         this.selected = selected;
         this.upsert = upsert;
+        this.dependsOn = Set.copyOf(dependsOn);
     }
 
     public static SyncAction ddl(ObjectRef object, Kind kind, List<String> statements, String detail) {
-        return new SyncAction(object, kind, statements, null, detail, true, false);
+        return ddl(object, kind, statements, detail, Set.of());
+    }
+
+    /** @param dependsOn target-schema tables that must exist before these statements can run */
+    public static SyncAction ddl(ObjectRef object, Kind kind, List<String> statements, String detail,
+                                 Collection<String> dependsOn) {
+        return new SyncAction(object, kind, statements, null, detail, true, false, dependsOn);
     }
 
     public static SyncAction data(ObjectRef object, DataProducer producer, String detail) {
@@ -57,15 +74,17 @@ public final class SyncAction {
 
     public static SyncAction data(ObjectRef object, List<String> statements, DataProducer producer,
                                   String detail, boolean upsert) {
-        return new SyncAction(object, Kind.DATA, statements, producer, detail, true, upsert);
+        return new SyncAction(object, Kind.DATA, statements, producer, detail, true, upsert,
+                Set.of());
     }
 
     public static SyncAction skipped(ObjectRef object, String detail) {
-        return new SyncAction(object, Kind.SKIP, List.of(), null, detail, false, false);
+        return new SyncAction(object, Kind.SKIP, List.of(), null, detail, false, false, Set.of());
     }
 
     public static SyncAction error(ObjectRef object, String message) {
-        SyncAction a = new SyncAction(object, Kind.ERROR, List.of(), null, message, false, false);
+        SyncAction a = new SyncAction(object, Kind.ERROR, List.of(), null, message, false, false,
+                Set.of());
         a.status = Status.FAILED;
         a.message = message;
         return a;
@@ -77,6 +96,9 @@ public final class SyncAction {
     public DataProducer dataProducer() { return dataProducer; }
     public String detail() { return detail; }
     public boolean upsert() { return upsert; }
+
+    /** Target-schema tables this object needs before it can be created; empty if none. */
+    public Set<String> dependsOn() { return dependsOn; }
 
     public boolean isSelected() { return selected; }
     public void setSelected(boolean selected) { this.selected = selected; }

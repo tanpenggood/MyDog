@@ -4,6 +4,7 @@ import com.mydog.connection.ConnectionProfile;
 import com.mydog.core.AppContext;
 import com.mydog.i18n.I18n;
 import com.mydog.ui.dialog.ConnectionDialog;
+import com.mydog.ui.sync.SyncWizard;
 import javafx.geometry.Insets;
 import javafx.scene.Scene;
 import javafx.scene.control.Button;
@@ -59,7 +60,14 @@ public final class MainWindow {
         MenuItem en = new MenuItem(I18n.tr("menu.language.en"));
         en.setOnAction(e -> switchLocale(ctx, "en", rebuild));
         langMenu.getItems().addAll(zh, en);
-        MenuBar menuBar = new MenuBar(langMenu);
+
+        // the wizard preselects whatever database the tree currently has focused, when it can
+        MenuItem syncItem = new MenuItem(I18n.tr("sync.title"));
+        syncItem.setOnAction(e -> SyncWizard.show(stage, ctx, tree.focusedSchema()));
+        Menu toolsMenu = new Menu(I18n.tr("menu.tools"));
+        toolsMenu.getItems().add(syncItem);
+
+        MenuBar menuBar = new MenuBar(langMenu, toolsMenu);
 
         ComboBox<ConnectionProfile> connBox = new ComboBox<>();
         connBox.setPrefWidth(260);

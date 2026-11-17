@@ -2,6 +2,10 @@ package com.mydog.sync;
 
 import com.mydog.util.SqlNames;
 
+import java.util.Collection;
+import java.util.LinkedHashSet;
+import java.util.Set;
+
 /**
  * Rewrites schema-qualified names in {@code SHOW CREATE} output from the source schema to the
  * target one.
@@ -80,6 +84,96 @@ public final class DdlRewriter {
             i++;
         }
         return out.toString();
+    }
+
+    /**
+     * The tables this SQL reads: the names that follow {@code FROM} and {@code JOIN}.
+     *
+     * <p>Only names present in {@code candidates} come back, and a {@code qualifier.name} pair is
+     * accepted only when the qualifier is {@code localSchema} — a view that reads a table of some
+     * other schema is that schema's business, not this sync's. Literals, comments and backticks are
+     * handled exactly as in {@link #retargetSchema}, so a string that merely contains {@code from x}
+     * does not invent a dependency.
+     *
+     * <p>A derived table ({@code FROM (SELECT ...) d}) and a table alias resolve to nothing here,
+     * which is the point: the result is a set of real base tables, safe to act on rather than a hint.
+     */
+    public static Set<String> readsFrom(String sql, Collection<String> candidates, String localSchema) {
+        Set<String> found = new LinkedHashSet<>();
+        if (sql == null || sql.isEmpty() || candidates.isEmpty()) return found;
+        int i = 0;
+        while (i < sql.length()) {
+            int afterNoise = skipNoise(sql, i);
+            if (afterNoise != i) {
+                i = afterNoise;
+                continue;
+            }
+            if (!isWordStart(sql, i)) {
+                i++;
+                continue;
+            }
+            int end = wordEnd(sql, i);
+            if (isWord(sql, i, end, "from") || isWord(sql, i, end, "join")) {
+                NameRef ref = nameAt(sql, end);
+                if (ref != null && (ref.qualifier() == null || ref.qualifier().equalsIgnoreCase(localSchema))) {
+                    for (String candidate : candidates) {
+                        if (candidate.equalsIgnoreCase(ref.name())) found.add(candidate);
+                    }
+                }
+            }
+            i = end;
+        }
+        return found;
+    }
+
+    /** A table reference: {@code [qualifier.]name}, either part possibly backquoted. */
+    private record NameRef(String qualifier, String name) {
+    }
+
+    private static NameRef nameAt(String s, int at) {
+        int p = at;
+        while (p < s.length() && Character.isWhitespace(s.charAt(p))) p++;
+        String first = identifierAt(s, p);
+        if (first == null) return null;
+        p = endOfIdentifier(s, p);
+        if (p < s.length() && s.charAt(p) == '.') {
+            p = skipWhitespace(s, p + 1);
+            String second = identifierAt(s, p);
+            if (second == null) return new NameRef(null, first);
+            return new NameRef(first, second);
+        }
+        return new NameRef(null, first);
+    }
+
+    private static int skipWhitespace(String s, int at) {
+        int p = at;
+        while (p < s.length() && Character.isWhitespace(s.charAt(p))) p++;
+        return p;
+    }
+
+    private static String identifierAt(String s, int at) {
+        if (at >= s.length()) return null;
+        if (s.charAt(at) == '`') {
+            int end = endOfBackquoted(s, at);
+            return s.substring(at + 1, Math.max(at + 1, end - 1)).replace("``", "`");
+        }
+        if (!isWordStart(s, at)) return null;
+        return s.substring(at, wordEnd(s, at));
+    }
+
+    private static int endOfIdentifier(String s, int at) {
+        if (at < s.length() && s.charAt(at) == '`') return endOfBackquoted(s, at);
+        return wordEnd(s, at);
+    }
+
+    private static int wordEnd(String s, int from) {
+        int end = from;
+        while (end < s.length() && isWordChar(s.charAt(end))) end++;
+        return end;
+    }
+
+    private static boolean isWord(String s, int from, int to, String word) {
+        return to - from == word.length() && s.regionMatches(true, from, word, 0, word.length());
     }
 
     // ------------------------------------------------------------------ scanning

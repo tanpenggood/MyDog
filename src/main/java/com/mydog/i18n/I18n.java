@@ -18,6 +18,13 @@ public final class I18n {
     private I18n() {
     }
 
+    /**
+     * Loads the bundle for one locale.
+     *
+     * <p>{@code Messages_en.properties} exists only so that this lookup cannot fall back through the
+     * <em>operating system</em> locale: ResourceBundle inserts the default locale into its candidate
+     * chain before the base bundle, which made "switch to English" a no-op on a Chinese machine.
+     */
     private static ResourceBundle load(Locale loc) {
         return ResourceBundle.getBundle(BASE_NAME, loc, I18n.class.getModule());
     }

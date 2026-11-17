@@ -21,6 +21,14 @@
          (-Dmydog.prism.order=sw) for automated headless-ish smoke tests so no GPU
          work is generated next to the flaky AMD driver on this dev machine. -->
     <mydog.prism.order>es2</mydog.prism.order>
+    <!-- tests that touch the toolkit use software rendering: no GPU on CI, and none of the
+         flaky-driver exposure this dev machine has -->
+    <mydog.test.prism.order>sw</mydog.test.prism.order>
+    <!-- the jpackage app-version must be one to three dot-separated integers AND the
+         major must be positive (verified with jpackage 25.0.2: both "0.1.0-SNAPSHOT"
+         and "0.1.0" are rejected). The 0.x project line therefore maps to installer
+         version 1.0.0; bump this in lockstep with <version> when cutting a release. -->
+    <jpackage.app.version>1.0.0</jpackage.app.version>
   </properties>
 
   <dependencyManagement>
@@ -120,6 +128,7 @@
         <version>3.6.1</version>
         <configuration>
           <excludedGroups>docker</excludedGroups>
+          <argLine>-Dprism.order=${mydog.test.prism.order}</argLine>
         </configuration>
       </plugin>
 
@@ -160,6 +169,9 @@
           <!-- IT classes share target/test-classes with unit tests; the "docker" group
                tag is what separates them (surefire excludes it, failsafe includes it) -->
           <groups>docker</groups>
+          <!-- the wizard model IT starts the real toolkit; keep it off the GPU on a dev
+               machine and off a missing GPU on a CI runner -->
+          <argLine>-Dprism.order=${mydog.test.prism.order}</argLine>
         </configuration>
       </plugin>
 
@@ -184,11 +196,50 @@
   </build>
 
   <profiles>
-    <!-- native packaging (M5): mvn -P native-mac package -->
+    <!-- ========================================================================
+         Native installers via jpackage (M5). v1 deliberately uses the NON-MODULAR
+         classpath route: copy every runtime dependency plus the app jar into
+         target/app, then hand that directory to jpackage, which bundles a full
+         JDK runtime (no jlink trimming, no ModiTect module-info) — installers land
+         around ~300 MB, which is accepted for v1. Modularization is a v2 item.
+
+         Run the profile matching the machine's OS; jpackage cannot cross-build:
+           macOS   : ./mvnw -P native-mac   verify   ->  target/dist/*.dmg
+           Windows : mvnw.cmd -P native-win verify   ->  target/dist/*.msi
+           Linux   : ./mvnw -P native-linux verify   ->  target/dist/*.deb
+         The openjfx dependency carries no OS classifier in <dependencies> on
+         purpose: its POM activates the matching platform profile, so each
+         installer embeds exactly its own platform's JavaFX jars.
+         Unsigned macOS build: first launch needs right-click -> Open. Signing /
+         notarization are optional later steps (see README).
+         ======================================================================== -->
+
+    <!-- Shared plugin block for the three profiles; only the jpackage type and
+         platform-specific flags differ. -->
     <profile>
       <id>native-mac</id>
       <build>
         <plugins>
+          <plugin>
+            <groupId>org.apache.maven.plugins</groupId>
+            <artifactId>maven-clean-plugin</artifactId>
+            <version>3.4.1</version>
+            <executions>
+              <execution>
+                <!-- jpackage refuses to overwrite an existing installer; wipe
+                     target/dist before each packaging run so `verify` is re-runnable -->
+                <id>clean-dist</id>
+                <phase>prepare-package</phase>
+                <goals><goal>clean</goal></goals>
+                <configuration>
+                  <excludeDefaultDirectories>true</excludeDefaultDirectories>
+                  <filesets>
+                    <fileset><directory>${project.build.directory}/dist</directory></fileset>
+                  </filesets>
+                </configuration>
+              </execution>
+            </executions>
+          </plugin>
           <plugin>
             <groupId>org.apache.maven.plugins</groupId>
             <artifactId>maven-dependency-plugin</artifactId>
@@ -201,6 +252,31 @@
                 <configuration>
                   <outputDirectory>${project.build.directory}/app</outputDirectory>
                   <includeScope>runtime</includeScope>
+                </configuration>
+              </execution>
+            </executions>
+          </plugin>
+          <plugin>
+            <groupId>org.apache.maven.plugins</groupId>
+            <artifactId>maven-resources-plugin</artifactId>
+            <version>3.5.0</version>
+            <executions>
+              <execution>
+                <!-- jpackage reads main-jar relative to its input dir, so the app jar must
+                     sit next to the copied dependencies. Declared in the same phase as
+                     jar:jar but after it (lifecycle-bound goals run first), so the jar
+                     exists by the time this copies it. -->
+                <id>copy-app-jar</id>
+                <phase>package</phase>
+                <goals><goal>copy-resources</goal></goals>
+                <configuration>
+                  <outputDirectory>${project.build.directory}/app</outputDirectory>
+                  <resources>
+                    <resource>
+                      <directory>${project.build.directory}</directory>
+                      <includes><include>${project.build.finalName}.jar</include></includes>
+                    </resource>
+                  </resources>
                 </configuration>
               </execution>
             </executions>
@@ -223,10 +299,233 @@
                     <argument>--main-jar</argument><argument>${project.build.finalName}.jar</argument>
                     <argument>--main-class</argument><argument>${main.class}</argument>
                     <argument>--dest</argument><argument>${project.build.directory}/dist</argument>
-                    <argument>--app-version</argument><argument>${project.version}</argument>
+                    <argument>--app-version</argument><argument>${jpackage.app.version}</argument>
+                    <argument>--vendor</argument><argument>MyDog Contributors</argument>
+                    <argument>--description</argument><argument>${project.description}</argument>
+                    <argument>--icon</argument><argument>${project.basedir}/src/main/packaging/mydog.icns</argument>
                     <argument>--java-options</argument><argument>-Dfile.encoding=UTF-8</argument>
+                    <!-- JavaFX from the classpath: the JDK launcher refuses to start an
+                         Application subclass unless javafx.graphics is resolved as a module
+                         ("JavaFX runtime components are missing" — observed with the plain
+                         classpath cfg). openjfx's -<os> classifier jars are complete modules
+                         (module-info + native libs), so point the module path at the app
+                         directory and resolve controls; the native-access flag silences the
+                         System::load warning exactly like the javafx:run dev config. -->
+                    <argument>--java-options</argument><argument>--module-path=$APPDIR</argument>
+                    <argument>--java-options</argument><argument>--add-modules=javafx.controls</argument>
+                    <argument>--java-options</argument><argument>--enable-native-access=javafx.graphics</argument>
                     <argument>--mac-package-name</argument><argument>MyDog</argument>
                     <argument>--mac-package-identifier</argument><argument>com.mydog.app</argument>
+                  </arguments>
+                </configuration>
+              </execution>
+            </executions>
+          </plugin>
+        </plugins>
+      </build>
+    </profile>
+
+    <profile>
+      <id>native-win</id>
+      <build>
+        <plugins>
+          <plugin>
+            <groupId>org.apache.maven.plugins</groupId>
+            <artifactId>maven-clean-plugin</artifactId>
+            <version>3.4.1</version>
+            <executions>
+              <execution>
+                <id>clean-dist</id>
+                <phase>prepare-package</phase>
+                <goals><goal>clean</goal></goals>
+                <configuration>
+                  <excludeDefaultDirectories>true</excludeDefaultDirectories>
+                  <filesets>
+                    <fileset><directory>${project.build.directory}/dist</directory></fileset>
+                  </filesets>
+                </configuration>
+              </execution>
+            </executions>
+          </plugin>
+          <plugin>
+            <groupId>org.apache.maven.plugins</groupId>
+            <artifactId>maven-dependency-plugin</artifactId>
+            <version>3.11.0</version>
+            <executions>
+              <execution>
+                <id>copy-deps</id>
+                <phase>prepare-package</phase>
+                <goals><goal>copy-dependencies</goal></goals>
+                <configuration>
+                  <outputDirectory>${project.build.directory}/app</outputDirectory>
+                  <includeScope>runtime</includeScope>
+                </configuration>
+              </execution>
+            </executions>
+          </plugin>
+          <plugin>
+            <groupId>org.apache.maven.plugins</groupId>
+            <artifactId>maven-resources-plugin</artifactId>
+            <version>3.5.0</version>
+            <executions>
+              <execution>
+                <id>copy-app-jar</id>
+                <phase>package</phase>
+                <goals><goal>copy-resources</goal></goals>
+                <configuration>
+                  <outputDirectory>${project.build.directory}/app</outputDirectory>
+                  <resources>
+                    <resource>
+                      <directory>${project.build.directory}</directory>
+                      <includes><include>${project.build.finalName}.jar</include></includes>
+                    </resource>
+                  </resources>
+                </configuration>
+              </execution>
+            </executions>
+          </plugin>
+          <plugin>
+            <groupId>org.codehaus.mojo</groupId>
+            <artifactId>exec-maven-plugin</artifactId>
+            <version>3.7.0</version>
+            <executions>
+              <execution>
+                <id>jpackage-win</id>
+                <phase>package</phase>
+                <goals><goal>exec</goal></goals>
+                <configuration>
+                  <executable>${java.home}/bin/jpackage</executable>
+                  <arguments>
+                    <argument>--type</argument><argument>msi</argument>
+                    <argument>--name</argument><argument>MyDog</argument>
+                    <argument>--input</argument><argument>${project.build.directory}/app</argument>
+                    <argument>--main-jar</argument><argument>${project.build.finalName}.jar</argument>
+                    <argument>--main-class</argument><argument>${main.class}</argument>
+                    <argument>--dest</argument><argument>${project.build.directory}/dist</argument>
+                    <argument>--app-version</argument><argument>${jpackage.app.version}</argument>
+                    <argument>--vendor</argument><argument>MyDog Contributors</argument>
+                    <argument>--description</argument><argument>${project.description}</argument>
+                    <argument>--icon</argument><argument>${project.basedir}/src/main/packaging/mydog.ico</argument>
+                    <argument>--java-options</argument><argument>-Dfile.encoding=UTF-8</argument>
+                    <!-- JavaFX from the classpath: the JDK launcher refuses to start an
+                         Application subclass unless javafx.graphics is resolved as a module
+                         ("JavaFX runtime components are missing" — observed with the plain
+                         classpath cfg). openjfx's -<os> classifier jars are complete modules
+                         (module-info + native libs), so point the module path at the app
+                         directory and resolve controls; the native-access flag silences the
+                         System::load warning exactly like the javafx:run dev config. -->
+                    <argument>--java-options</argument><argument>--module-path=$APPDIR</argument>
+                    <argument>--java-options</argument><argument>--add-modules=javafx.controls</argument>
+                    <argument>--java-options</argument><argument>--enable-native-access=javafx.graphics</argument>
+                    <!-- fixed upgrade UUID: same value across releases lets the msi
+                         upgrade in place instead of side-installing; never change it -->
+                    <argument>--win-upgrade-uuid</argument><argument>3f2b7a91-5c48-4f6e-9d2a-1b8c7e4f0a55</argument>
+                    <argument>--win-menu</argument>
+                    <argument>--win-shortcut</argument>
+                  </arguments>
+                </configuration>
+              </execution>
+            </executions>
+          </plugin>
+        </plugins>
+      </build>
+    </profile>
+
+    <profile>
+      <id>native-linux</id>
+      <build>
+        <plugins>
+          <plugin>
+            <groupId>org.apache.maven.plugins</groupId>
+            <artifactId>maven-clean-plugin</artifactId>
+            <version>3.4.1</version>
+            <executions>
+              <execution>
+                <id>clean-dist</id>
+                <phase>prepare-package</phase>
+                <goals><goal>clean</goal></goals>
+                <configuration>
+                  <excludeDefaultDirectories>true</excludeDefaultDirectories>
+                  <filesets>
+                    <fileset><directory>${project.build.directory}/dist</directory></fileset>
+                  </filesets>
+                </configuration>
+              </execution>
+            </executions>
+          </plugin>
+          <plugin>
+            <groupId>org.apache.maven.plugins</groupId>
+            <artifactId>maven-dependency-plugin</artifactId>
+            <version>3.11.0</version>
+            <executions>
+              <execution>
+                <id>copy-deps</id>
+                <phase>prepare-package</phase>
+                <goals><goal>copy-dependencies</goal></goals>
+                <configuration>
+                  <outputDirectory>${project.build.directory}/app</outputDirectory>
+                  <includeScope>runtime</includeScope>
+                </configuration>
+              </execution>
+            </executions>
+          </plugin>
+          <plugin>
+            <groupId>org.apache.maven.plugins</groupId>
+            <artifactId>maven-resources-plugin</artifactId>
+            <version>3.5.0</version>
+            <executions>
+              <execution>
+                <id>copy-app-jar</id>
+                <phase>package</phase>
+                <goals><goal>copy-resources</goal></goals>
+                <configuration>
+                  <outputDirectory>${project.build.directory}/app</outputDirectory>
+                  <resources>
+                    <resource>
+                      <directory>${project.build.directory}</directory>
+                      <includes><include>${project.build.finalName}.jar</include></includes>
+                    </resource>
+                  </resources>
+                </configuration>
+              </execution>
+            </executions>
+          </plugin>
+          <plugin>
+            <groupId>org.codehaus.mojo</groupId>
+            <artifactId>exec-maven-plugin</artifactId>
+            <version>3.7.0</version>
+            <executions>
+              <execution>
+                <id>jpackage-linux</id>
+                <phase>package</phase>
+                <goals><goal>exec</goal></goals>
+                <configuration>
+                  <executable>${java.home}/bin/jpackage</executable>
+                  <arguments>
+                    <argument>--type</argument><argument>deb</argument>
+                    <argument>--name</argument><argument>MyDog</argument>
+                    <argument>--input</argument><argument>${project.build.directory}/app</argument>
+                    <argument>--main-jar</argument><argument>${project.build.finalName}.jar</argument>
+                    <argument>--main-class</argument><argument>${main.class}</argument>
+                    <argument>--dest</argument><argument>${project.build.directory}/dist</argument>
+                    <argument>--app-version</argument><argument>${jpackage.app.version}</argument>
+                    <argument>--vendor</argument><argument>MyDog Contributors</argument>
+                    <argument>--description</argument><argument>${project.description}</argument>
+                    <argument>--icon</argument><argument>${project.basedir}/src/main/packaging/mydog_512.png</argument>
+                    <argument>--java-options</argument><argument>-Dfile.encoding=UTF-8</argument>
+                    <!-- JavaFX from the classpath: the JDK launcher refuses to start an
+                         Application subclass unless javafx.graphics is resolved as a module
+                         ("JavaFX runtime components are missing" — observed with the plain
+                         classpath cfg). openjfx's -<os> classifier jars are complete modules
+                         (module-info + native libs), so point the module path at the app
+                         directory and resolve controls; the native-access flag silences the
+                         System::load warning exactly like the javafx:run dev config. -->
+                    <argument>--java-options</argument><argument>--module-path=$APPDIR</argument>
+                    <argument>--java-options</argument><argument>--add-modules=javafx.controls</argument>
+                    <argument>--java-options</argument><argument>--enable-native-access=javafx.graphics</argument>
+                    <argument>--linux-deb-maintainer</argument><argument>MyDog Contributors &lt;maintainers@mydog.invalid&gt;</argument>
+                    <argument>--linux-menu-group</argument><argument>Utility</argument>
+                    <argument>--linux-shortcut</argument>
                   </arguments>
                 </configuration>
               </execution>

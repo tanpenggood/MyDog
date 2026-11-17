@@ -23,6 +23,30 @@ class I18nBundleTest {
         assertThat(diffs(zh, en)).isEmpty();
     }
 
+    /**
+     * Choosing English has to mean English even on a machine whose operating system speaks Chinese.
+     *
+     * <p>ResourceBundle puts the OS locale into the candidate chain <em>before</em> the base bundle,
+     * so a request for "en" with no Messages_en.properties silently loaded the Chinese one and the
+     * menu's language switch did nothing. The empty Messages_en.properties exists for this test.
+     */
+    @Test
+    void englishWinsOverTheOperatingSystemLocale() {
+        Locale saved = Locale.getDefault();
+        try {
+            Locale.setDefault(Locale.SIMPLIFIED_CHINESE);
+            I18n.setLocale("en");
+            assertThat(I18n.tr("sync.next")).isEqualTo("Next");
+            assertThat(I18n.tr("app.name")).isEqualTo("MyDog");
+
+            I18n.setLocale("zh_CN");
+            assertThat(I18n.tr("sync.next")).isEqualTo("下一步");
+        } finally {
+            Locale.setDefault(saved);
+            I18n.setLocale("en");     // leave the static facade in a known state for later tests
+        }
+    }
+
     @Test
     void missingKeyIsMarkedNotThrown() {
         I18n.setLocale("en");
