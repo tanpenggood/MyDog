@@ -107,19 +107,25 @@ public final class ObjectTreeController {
         }
         TreeItem<Object> root = new TreeItem<>(profile.displayLabel());
         root.getChildren().add(loading());
-        tree.setRoot(root);
-        root.setExpanded(true);
+        // the listener must be registered before the initial expansion, or the
+        // first expand event is missed and the tree sticks on "Loading..."
         root.expandedProperty().addListener((o, was, open) -> {
             if (open && isLoadingOnly(root)) {
-                load(() -> {
-                    try (Connection c = ctx.openConnection(profile)) {
-                        return new MySqlMetadataReader(c).listSchemas().stream()
-                                .map(s -> (Object) new SchemaNode(s.name())).toList();
-                    }
-                }, root, schemas -> root.getChildren().setAll(
-                        schemas.stream().map(this::schemaItem).toList()));
+                loadSchemas(profile, root);
             }
         });
+        tree.setRoot(root);
+        root.setExpanded(true);
+    }
+
+    private void loadSchemas(ConnectionProfile profile, TreeItem<Object> root) {
+        load(() -> {
+            try (Connection c = ctx.openConnection(profile)) {
+                return new MySqlMetadataReader(c).listSchemas().stream()
+                        .map(s -> (Object) new SchemaNode(s.name())).toList();
+            }
+        }, root, schemas -> root.getChildren().setAll(
+                schemas.stream().map(this::schemaItem).toList()));
     }
 
     // ------------------------------------------------------------------ node building

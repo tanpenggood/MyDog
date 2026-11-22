@@ -126,7 +126,15 @@ public final class MainWindow {
         ConnectionProfile selected = box.getValue();
         items.setAll(ctx.connections().all());
         if (selected != null) {
-            items.stream().filter(p -> p.id().equals(selected.id())).findFirst().ifPresent(box::setValue);
+            // keep the selection if it survived; otherwise the current value is stale
+            // (e.g. it was just deleted) — clear it so the combo doesn't show a ghost profile
+            ConnectionProfile stillThere = items.stream()
+                    .filter(p -> p.id().equals(selected.id())).findFirst().orElse(null);
+            if (stillThere != null) {
+                box.setValue(stillThere);
+            } else {
+                box.getSelectionModel().clearSelection();
+            }
         } else if (!items.isEmpty()) {
             box.getSelectionModel().selectFirst();
         }
