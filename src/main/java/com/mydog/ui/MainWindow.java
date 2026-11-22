@@ -17,6 +17,7 @@ import javafx.scene.control.MenuItem;
 import javafx.scene.control.SplitPane;
 import javafx.scene.control.ToolBar;
 import javafx.scene.layout.BorderPane;
+import javafx.scene.layout.HBox;
 import javafx.scene.layout.VBox;
 import javafx.stage.Stage;
 
@@ -77,23 +78,13 @@ public final class MainWindow {
         refreshConnections(connBox, ctx);
 
         Button newBtn = new Button(I18n.tr("conn.new"));
-        Button editBtn = new Button(I18n.tr("conn.edit"));
-        Button delBtn = new Button(I18n.tr("conn.delete"));
-        Button testBtn = new Button(I18n.tr("conn.test"));
 
         Runnable refresh = () -> refreshConnections(connBox, ctx);
         newBtn.setOnAction(e -> ConnectionDialog.showNew(stage, ctx, refresh));
-        editBtn.disableProperty().bind(connBox.valueProperty().isNull());
-        editBtn.setOnAction(e -> ConnectionDialog.showEdit(stage, ctx, connBox.getValue(), refresh));
-        delBtn.disableProperty().bind(connBox.valueProperty().isNull());
-        delBtn.setOnAction(e -> confirmDelete(stage, ctx, connBox.getValue(), refresh));
-        testBtn.disableProperty().bind(connBox.valueProperty().isNull());
-        testBtn.setOnAction(e -> {
-            ConnectionProfile selected = connBox.getValue();
-            if (selected != null) {
-                ConnectionDialog.testConnection(ctx, selected, (ok, text) -> reportToStatus(status, text, ok));
-            }
-        });
+
+        // Edit / delete / test live on the object tree's right-click menu (see
+        // ObjectTreeController.buildConnectionMenu): they act on the connection the pointer
+        // is on, and the toolbar stops duplicating them.
 
         // selecting a connection drives the tree and clears stale tabs
         connBox.valueProperty().addListener((o, was, now) -> {
@@ -109,8 +100,7 @@ public final class MainWindow {
             tree.showConnection(connBox.getValue());
         }
 
-        ToolBar toolBar = new ToolBar(connBox, newBtn, editBtn, delBtn,
-                new javafx.scene.control.Separator(), testBtn);
+        ToolBar toolBar = new ToolBar(connBox, newBtn);
         return new VBox(menuBar, toolBar);
     }
 
@@ -138,21 +128,6 @@ public final class MainWindow {
         } else if (!items.isEmpty()) {
             box.getSelectionModel().selectFirst();
         }
-    }
-
-    private static void confirmDelete(Stage stage, AppContext ctx, ConnectionProfile p, Runnable refresh) {
-        javafx.scene.control.Alert alert = new javafx.scene.control.Alert(
-                javafx.scene.control.Alert.AlertType.CONFIRMATION,
-                I18n.tr("conn.deleteConfirm", p.name()),
-                javafx.scene.control.ButtonType.OK, javafx.scene.control.ButtonType.CANCEL);
-        alert.initOwner(stage);
-        alert.setHeaderText(null);
-        alert.showAndWait().ifPresent(bt -> {
-            if (bt == javafx.scene.control.ButtonType.OK) {
-                ctx.connections().delete(p.id());
-                refresh.run();
-            }
-        });
     }
 
     private static void switchLocale(AppContext ctx, String tag, Runnable rebuild) {
