@@ -9,8 +9,11 @@
 ## 功能
 
 - **连接管理**：多连接 CRUD + 测试连接；密码以 AES-GCM 加密存于 `~/.mydog/connections.json`
-  （文件权限 0600，密钥 `~/.mydog/.secret.key`，全部原子写入，重启后无明文）
-- **对象树**：库/表/视图/触发器/函数/存储过程懒加载 + 右键操作
+  （文件权限 0600，密钥 `~/.mydog/.secret.key`，全部原子写入，重启后无明文）。
+  连接的新建/测试/编辑/删除都收在**对象树连接节点的右键菜单**里；工具栏只留连接切换
+  combo 和「新建连接」按钮。删除连接会同步刷新 combo 与状态栏，不会留下"幽灵"选中项
+- **对象树**：库/表/视图/触发器/函数/存储过程懒加载；任意节点右键出上下文菜单
+  （右键同时会选中指针下的行——右键本身不移动选择）
 - **SQL 编辑器**：多 Tab、语法高亮、`DELIMITER` 感知的多语句执行、结果集/消息面板
 - **数据查看器**：keyset 分页、服务端排序与 WHERE 过滤，可直接编辑单元格
 - **结构查看器**：SHOW CREATE 与列/索引/外键明细
@@ -74,15 +77,23 @@ jpackage 捆绑完整 JDK 25 运行时（未做 jlink 裁剪——macOS 实测 a
 `Application` 子类会被 JDK 启动器拒绝（"JavaFX runtime components are missing"），
 而 openjfx 的 `-<os>` classifier jar 自带 module-info 与原生库，从模块路径解析即可正常启动。
 
-| 平台 | 命令（在本机系统上执行） | 产物 |
-|---|---|---|
-| macOS (dmg) | `./mvnw -P native-mac verify` | `target/dist/MyDog-1.0.0.dmg` |
-| Windows (msi) | `mvnw.cmd -P native-win verify` | `target/dist/MyDog-1.0.0.msi` |
-| Linux (deb) | `./mvnw -P native-linux verify` | `target/dist/mydog_1.0.0_amd64.deb` |
-
 jpackage 不能跨平台构建：三个安装器分别由 `.github/workflows/release.yml` 在
 windows-latest / ubuntu-latest / macos-latest 原生 runner 上产出（Temurin 25），
-产物以 artifact 形式上传。注意 macos-latest 为 Apple Silicon，v1 的 dmg 是 arm64 版。
+并把安装器**附加到对应的 GitHub Release**（按 tag 名解析，推 tag 即触发）。
+注意 macos-latest 为 Apple Silicon，v1 的 dmg 是 arm64 版。
+
+jpackage 强制安装器文件名为 `<name>-<app-version>.<ext>` 且必填 `--app-version`，
+所以 CI 在打包后把产物改名为 **不带版本号**、只标 OS 与真实架构的名字——
+Release 的下载文件就不会声称一个和 tag 对不上的版本：
+
+| 平台 | 本机构建命令（在本机系统上执行） | CI 产物名 |
+|---|---|---|
+| macOS (dmg, arm64) | `./mvnw -P native-mac verify` | `MyDog-macos-arm64.dmg` |
+| Windows (msi, x64) | `mvnw.cmd -P native-win verify` | `MyDog-windows-x64.msi` |
+| Linux (deb, x64) | `./mvnw -P native-linux verify` | `MyDog-linux-x64.deb` |
+
+（本机构建落盘仍是 jpackage 原始名，如 `target/dist/MyDog-1.0.0.dmg`；装好后应用
+内名称与版本不受改名影响。）
 
 本地打 Windows 的 msi 需要先装 **WiX Toolset v3** 并让 `candle.exe` / `light.exe` 在 PATH 上
 （jpackage 生成 msi 硬依赖它，与项目代码无关）；release.yml 的 Windows 任务已自动安装，
@@ -115,9 +126,9 @@ PROGRESS.md                 # 进度看板：里程碑状态、根因台账、�
 pom.xml                     # 三个 native-* profile 见"打包"一节
 docker/                     # 双 MySQL 沙箱 compose + 差异化 fixture
 src/main/packaging/         # 安装器图标 + make_icons.py 再生成脚本
-.github/workflows/          # test.yml：沙箱 + xvfb 跑全量测试；release.yml：三平台安装器
+.github/workflows/          # test.yml：沙箱 + xvfb 跑全量测试；release.yml：三平台安装器并附到 Release
 src/main/java/com/mydog/    # core/connection/metadata/sql/sync/ui/i18n/util
-src/it/java/                # failsafe 集成测试（@Tag("docker")）
+src/it/java/                # failsafe 集成测试（@Tag("docker")，含真按钮的 UI IT）
 ```
 
 图标再生成（macOS 上执行，需 `sips`/`iconutil`）：`python3 src/main/packaging/make_icons.py`
