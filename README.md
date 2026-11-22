@@ -77,10 +77,15 @@ jpackage 捆绑完整 JDK 25 运行时（未做 jlink 裁剪——macOS 实测 a
 `Application` 子类会被 JDK 启动器拒绝（"JavaFX runtime components are missing"），
 而 openjfx 的 `-<os>` classifier jar 自带 module-info 与原生库，从模块路径解析即可正常启动。
 
-jpackage 不能跨平台构建：三个安装器分别由 `.github/workflows/release.yml` 在
+jpackage 不能跨平台构建：安装器分别由 `.github/workflows/release.yml` 在
 windows-latest / ubuntu-latest / macos-latest 原生 runner 上产出（Temurin 25），
 并把安装器**附加到对应的 GitHub Release**（按 tag 名解析，推 tag 即触发）。
-注意 macos-latest 为 Apple Silicon，v1 的 dmg 是 arm64 版。
+
+**macOS 分两个架构**：GitHub 的 Intel（x64）runner 已于 2025-12 全部退役，所以两个 dmg
+都在 Apple Silicon runner 上构建——`macos-arm64` 用默认 aarch64 JDK；`macos-x64`
+（Intel Mac 用这个）用 x64 JDK 经 Rosetta 2 透明转译运行，jpackage 忠实打包当前
+运行的 JDK，因此捆绑的是 x64 运行时与 `mac`（x64）classifier 的 JavaFX jar。产物在
+Intel Mac 上原生运行，在 Apple Silicon 上也能经 Rosetta 跑（慢一点）。
 
 jpackage 强制安装器文件名为 `<name>-<app-version>.<ext>` 且必填 `--app-version`，
 所以 CI 在打包后把产物改名为 **不带版本号**、只标 OS 与真实架构的名字——
@@ -88,7 +93,8 @@ Release 的下载文件就不会声称一个和 tag 对不上的版本：
 
 | 平台 | 本机构建命令（在本机系统上执行） | CI 产物名 |
 |---|---|---|
-| macOS (dmg, arm64) | `./mvnw -P native-mac verify` | `MyDog-macos-arm64.dmg` |
+| macOS (dmg, Apple Silicon) | `./mvnw -P native-mac verify` | `MyDog-macos-arm64.dmg` |
+| macOS (dmg, Intel) | 在 Intel Mac 上：`./mvnw -P native-mac verify` | `MyDog-macos-x64.dmg` |
 | Windows (msi, x64) | `mvnw.cmd -P native-win verify` | `MyDog-windows-x64.msi` |
 | Linux (deb, x64) | `./mvnw -P native-linux verify` | `MyDog-linux-x64.deb` |
 

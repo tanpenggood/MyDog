@@ -18,10 +18,17 @@
 # stop failsafe (learned the hard way: the Linux job once ran SyncWizardModelIT
 # on a bare runner and hung for 6h until the job timeout killed it).
 #
-# macOS note: macos-latest runners are Apple Silicon, so the dmg is an
-# arm64 build for Apple Silicon Macs. It is unsigned — see README for the
-# right-click → Open first launch. Intel (x64) dmg + universal binary are v2
-# items.
+# macOS note: macos-latest runners are Apple Silicon and GitHub's Intel
+# (x64) runners were fully retired (macos-13, Dec 2025), so BOTH mac dmg
+# variants are built on arm64 runners: the arm64 one with the default aarch64
+# JDK, the x64 (Intel) one with an x64 JDK run transparently under Rosetta 2
+# (preinstalled on GitHub's arm64 mac images). jpackage cannot cross-compile,
+# but it faithfully packages whichever JDK runs it — so the x64 job bundles
+# an x64 runtime, and the openjfx POM resolves the `mac` (x64) classifier
+# jars because Maven's JVM reports os.arch=x86_64 under Rosetta. The x64 dmg
+# runs natively on Intel Macs and via Rosetta on Apple Silicon. Both are
+# unsigned — see README for the right-click → Open first launch. A single
+# universal2 dmg is a v2 item.
 name: release
 
 on:
@@ -50,6 +57,11 @@ jobs:
             profile: native-mac
             artifact: MyDog-macos-arm64
             ext: dmg
+          - os: macos-latest       # Apple Silicon runner, x64 build via Rosetta 2
+            profile: native-mac
+            artifact: MyDog-macos-x64
+            ext: dmg
+            jdk-arch: x64
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
@@ -58,6 +70,9 @@ jobs:
         with:
           distribution: temurin
           java-version: '25'
+          # empty for all but the Rosetta mac job — setup-java falls back to
+          # the runner's own arch when the input is empty
+          architecture: ${{ matrix.jdk-arch }}
           cache: maven
 
       # jpackage shells out to the WiX 3.x toolset to build an .msi. The choco
