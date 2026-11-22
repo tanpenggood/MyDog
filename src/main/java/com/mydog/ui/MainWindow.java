@@ -17,6 +17,7 @@ import javafx.scene.control.MenuItem;
 import javafx.scene.control.SplitPane;
 import javafx.scene.control.ToolBar;
 import javafx.scene.layout.BorderPane;
+import javafx.scene.layout.HBox;
 import javafx.scene.layout.VBox;
 import javafx.stage.Stage;
 
@@ -67,7 +68,8 @@ public final class MainWindow {
         Menu toolsMenu = new Menu(I18n.tr("menu.tools"));
         toolsMenu.getItems().add(syncItem);
 
-        MenuBar menuBar = new MenuBar(langMenu, toolsMenu);
+        // the menu-bar row: New Connection comes first, then the menus (语言 / 工具)
+        Button newBtn = new Button(I18n.tr("conn.new"));
 
         ComboBox<ConnectionProfile> connBox = new ComboBox<>();
         connBox.setPrefWidth(260);
@@ -76,24 +78,12 @@ public final class MainWindow {
         connBox.setCellFactory(v -> new ConnectionListCell());
         refreshConnections(connBox, ctx);
 
-        Button newBtn = new Button(I18n.tr("conn.new"));
-        Button editBtn = new Button(I18n.tr("conn.edit"));
-        Button delBtn = new Button(I18n.tr("conn.delete"));
-        Button testBtn = new Button(I18n.tr("conn.test"));
-
         Runnable refresh = () -> refreshConnections(connBox, ctx);
         newBtn.setOnAction(e -> ConnectionDialog.showNew(stage, ctx, refresh));
-        editBtn.disableProperty().bind(connBox.valueProperty().isNull());
-        editBtn.setOnAction(e -> ConnectionDialog.showEdit(stage, ctx, connBox.getValue(), refresh));
-        delBtn.disableProperty().bind(connBox.valueProperty().isNull());
-        delBtn.setOnAction(e -> confirmDelete(stage, ctx, connBox.getValue(), refresh));
-        testBtn.disableProperty().bind(connBox.valueProperty().isNull());
-        testBtn.setOnAction(e -> {
-            ConnectionProfile selected = connBox.getValue();
-            if (selected != null) {
-                ConnectionDialog.testConnection(ctx, selected, (ok, text) -> reportToStatus(status, text, ok));
-            }
-        });
+
+        // Edit / delete / test live on the object tree's right-click menu (see
+        // ObjectTreeController.buildConnectionMenu): they act on the connection the pointer
+        // is on, and the toolbar stops duplicating them.
 
         // selecting a connection drives the tree and clears stale tabs
         connBox.valueProperty().addListener((o, was, now) -> {
@@ -109,9 +99,16 @@ public final class MainWindow {
             tree.showConnection(connBox.getValue());
         }
 
-        ToolBar toolBar = new ToolBar(connBox, newBtn, editBtn, delBtn,
-                new javafx.scene.control.Separator(), testBtn);
-        return new VBox(menuBar, toolBar);
+        // a delete (or edit) done from the tree's own menu changed the store behind the
+        // combo's back — this is how the combo finds out and drops the ghost
+        tree.setOnStoreChanged(refresh);
+
+        MenuBar menuBar = new MenuBar(langMenu, toolsMenu);
+        // the button sits inside the menu row itself, before the menus, per the UI spec
+        javafx.scene.layout.HBox menuRow = new javafx.scene.layout.HBox(6, newBtn, menuBar);
+        HBox.setHgrow(menuBar, javafx.scene.layout.Priority.ALWAYS);
+        ToolBar toolBar = new ToolBar(connBox);
+        return new VBox(menuRow, toolBar);
     }
 
     /** Status bar doubles as the connection-test result line (green ok / red failure). */
@@ -133,26 +130,17 @@ public final class MainWindow {
             if (stillThere != null) {
                 box.setValue(stillThere);
             } else {
-                box.getSelectionModel().clearSelection();
+                // clearSelection() alone is NOT enough: ComboBox keeps a user-set value even
+                // with no selection, so the deleted profile stayed on screen as a ghost.
+                // Overwrite the value explicitly, then fall through to pick a survivor.
+                box.setValue(null);
+                if (!items.isEmpty()) {
+                    box.getSelectionModel().selectFirst();
+                }
             }
         } else if (!items.isEmpty()) {
             box.getSelectionModel().selectFirst();
         }
-    }
-
-    private static void confirmDelete(Stage stage, AppContext ctx, ConnectionProfile p, Runnable refresh) {
-        javafx.scene.control.Alert alert = new javafx.scene.control.Alert(
-                javafx.scene.control.Alert.AlertType.CONFIRMATION,
-                I18n.tr("conn.deleteConfirm", p.name()),
-                javafx.scene.control.ButtonType.OK, javafx.scene.control.ButtonType.CANCEL);
-        alert.initOwner(stage);
-        alert.setHeaderText(null);
-        alert.showAndWait().ifPresent(bt -> {
-            if (bt == javafx.scene.control.ButtonType.OK) {
-                ctx.connections().delete(p.id());
-                refresh.run();
-            }
-        });
     }
 
     private static void switchLocale(AppContext ctx, String tag, Runnable rebuild) {

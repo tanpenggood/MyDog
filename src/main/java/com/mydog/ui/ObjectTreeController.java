@@ -9,6 +9,7 @@ import com.mydog.metadata.model.RoutineDef;
 import com.mydog.metadata.model.TableDef;
 import com.mydog.metadata.model.TriggerDef;
 import com.mydog.metadata.model.ViewDef;
+import com.mydog.ui.dialog.ConnectionDialog;
 import com.mydog.ui.sync.SyncWizard;
 import com.mydog.util.SqlNames;
 import javafx.application.Platform;
@@ -37,6 +38,8 @@ import java.util.concurrent.Executors;
 public final class ObjectTreeController {
 
     /** Payload types carried by tree items. */
+    /** The connection the tree is showing; the root node's payload. */
+    public record ConnectionNode(ConnectionProfile profile) {}
     public record SchemaNode(String name) {}
     public record CategoryNode(String schema, String category) {}   // tables|views|routines|triggers
     public record TableNode(TableDef table) {}
@@ -50,6 +53,14 @@ public final class ObjectTreeController {
     private final AppContext ctx;
     private final Workspace workspace;
     private final TreeView<Object> tree;
+    /**
+     * Fired whenever this tree changed the connection store (its edit/delete menu items), so
+     * whoever mirrors the store — the toolbar's combo box — can reload. Without it a delete
+     * done here left the combo showing the deleted profile as both its value and its list
+     * entry: the tree knew, the toolbar did not.
+     */
+    private Runnable onStoreChanged;
+
     private final ExecutorService pool = Executors.newCachedThreadPool(r -> {
         Thread t = new Thread(r, "metadata-loader");
         t.setDaemon(true);
@@ -61,13 +72,7 @@ public final class ObjectTreeController {
         this.workspace = workspace;
         this.tree = new TreeView<>();
         this.tree.setRoot(new TreeItem<>(I18n.tr("tree.noConnection")));
-        this.tree.setCellFactory(v -> new TreeCell<>() {
-            @Override
-            protected void updateItem(Object item, boolean empty) {
-                super.updateItem(item, empty);
-                setText(empty || item == null ? null : label(item));
-            }
-        });
+        // the cell factory (labels + per-row context menu) is installed by installContextMenu
         installContextMenu();
         tree.getSelectionModel().selectedItemProperty().addListener((o, was, now) -> {
             if (now != null && now.getValue() instanceof TableNode tn) {
@@ -78,6 +83,11 @@ public final class ObjectTreeController {
 
     public TreeView<Object> view() {
         return tree;
+    }
+
+    /** See {@link #onStoreChanged}: the toolbar combo registers itself through this. */
+    public void setOnStoreChanged(Runnable listener) {
+        this.onStoreChanged = listener;
     }
 
     /**
@@ -105,7 +115,7 @@ public final class ObjectTreeController {
             tree.setRoot(new TreeItem<>(I18n.tr("tree.noConnection")));
             return;
         }
-        TreeItem<Object> root = new TreeItem<>(profile.displayLabel());
+        TreeItem<Object> root = new TreeItem<>(new ConnectionNode(profile));
         root.getChildren().add(loading());
         // the listener must be registered before the initial expansion, or the
         // first expand event is missed and the tree sticks on "Loading..."
@@ -194,10 +204,39 @@ public final class ObjectTreeController {
 
     // ------------------------------------------------------------------ context menu
 
+    /**
+     * The menu is built at right-click time, not on {@code onShowing}, and here is why that
+     * choice is forced: {@code ContextMenu.show()} starts with a guard that silently returns
+     * when {@code getItems()} is empty, and {@code onShowing} only fires once that guard is
+     * passed — a lazily-built menu on a fresh {@code ContextMenu} can therefore never appear
+     * at all. (That was not theoretical: it is exactly why right-click did nothing, on any
+     * node, until this was rebuilt.)
+     *
+     * <p>Each cell carries its own handler so the right-click also <em>selects</em> its row —
+     * a right press alone does not move the selection — and the menu is built for the row the
+     * pointer is on, never the row that happened to be selected before.
+     */
     private void installContextMenu() {
-        ContextMenu menu = new ContextMenu();
-        tree.setContextMenu(menu);
-        menu.setOnShowing(e -> buildMenu(menu));
+        tree.setCellFactory(v -> new TreeCell<>() {
+            {
+                addEventHandler(javafx.scene.input.ContextMenuEvent.CONTEXT_MENU_REQUESTED, e -> {
+                    ContextMenu menu = new ContextMenu();
+                    buildMenu(menu, getTreeItem());
+                    if (menu.getItems().isEmpty()) return;   // nothing to offer on this row
+                    // select the row the pointer is on: what the user right-clicked is what the
+                    // menu (and everything the workspace reads off the selection) acts on
+                    tree.getSelectionModel().select(getIndex());
+                    menu.show(this, e.getScreenX(), e.getScreenY());
+                    e.consume();     // keep Control's built-in empty-menu path out of the way
+                });
+            }
+
+            @Override
+            protected void updateItem(Object item, boolean empty) {
+                super.updateItem(item, empty);
+                setText(empty || item == null ? null : label(item));
+            }
+        });
         tree.setOnMouseClicked(e -> {
             if (e.getClickCount() == 2 && e.getButton().equals(javafx.scene.input.MouseButton.PRIMARY)) {
                 openSelected();
@@ -205,11 +244,14 @@ public final class ObjectTreeController {
         });
     }
 
-    private void buildMenu(ContextMenu menu) {
-        TreeItem<Object> sel = tree.getSelectionModel().getSelectedItem();
+    private void buildMenu(ContextMenu menu, TreeItem<Object> sel) {
         menu.getItems().clear();
         if (sel == null || sel.getValue() == null) return;
         Object node = sel.getValue();
+        if (node instanceof ConnectionNode cn) {
+            buildConnectionMenu(menu, cn.profile());
+            return;
+        }
         if (node instanceof TableNode tn) {
             menu.getItems().addAll(
                     item(I18n.tr("tree.viewData"), () -> workspace.openDataTab(tn.table())),
@@ -246,6 +288,68 @@ public final class ObjectTreeController {
             menu.getItems().add(new SeparatorMenuItem());
             menu.getItems().add(item(I18n.tr("tree.refresh"), () -> refreshFrom(sel)));
         }
+    }
+
+    /**
+     * The right-click menu on a connection's root node: edit / delete / test live here, not in the
+     * toolbar, so they act on the connection the pointer is on rather than the combo's selection.
+     *
+     * <p>The profile is re-fetched by id right before the action runs, so an edit that renamed or
+     * re-pointed the connection is the one acted on — not the copy captured when the menu opened.
+     */
+    private void buildConnectionMenu(ContextMenu menu, ConnectionProfile clicked) {
+        java.util.function.Supplier<ConnectionProfile> fresh = () ->
+                ctx.connections().find(clicked.id()).orElse(clicked);
+        menu.getItems().addAll(
+                item(I18n.tr("conn.edit"), () ->
+                        ConnectionDialog.showEdit(ownerWindow(), ctx, fresh.get(), this::reload)),
+                item(I18n.tr("conn.delete"), () -> confirmDelete(fresh.get())),
+                item(I18n.tr("conn.test"), () ->
+                        ConnectionDialog.testConnection(ctx, fresh.get(), this::reportTest)));
+    }
+
+    /** Re-read the store and re-point the tree at what the id now is (or nothing, if it is gone). */
+    private void reload() {
+        showConnection(ctx.activeProfile());
+        if (onStoreChanged != null) onStoreChanged.run();   // the combo must not keep a ghost
+    }
+
+    /**
+     * Test feedback goes to a small popup anchored to the tree — the main-window status bar is not
+     * reachable from here and a throwaway {@code Alert} can end up hidden behind the window.
+     */
+    private void reportTest(boolean ok, String text) {
+        javafx.scene.control.Alert alert = new javafx.scene.control.Alert(
+                ok ? javafx.scene.control.Alert.AlertType.INFORMATION
+                   : javafx.scene.control.Alert.AlertType.ERROR,
+                text);
+        alert.initOwner(ownerWindow());
+        alert.setHeaderText(null);
+        alert.setTitle(I18n.tr(ok ? "conn.test.okTitle" : "conn.test.failTitle"));
+        // non-blocking: a modal alert would freeze the tree until dismissed
+        alert.show();
+    }
+
+    private javafx.stage.Window ownerWindow() {
+        return tree.getScene() == null ? null : tree.getScene().getWindow();
+    }
+
+    private void confirmDelete(ConnectionProfile p) {
+        javafx.scene.control.Alert alert = new javafx.scene.control.Alert(
+                javafx.scene.control.Alert.AlertType.CONFIRMATION,
+                I18n.tr("conn.deleteConfirm", p.name()),
+                javafx.scene.control.ButtonType.OK, javafx.scene.control.ButtonType.CANCEL);
+        alert.initOwner(ownerWindow());
+        alert.setHeaderText(null);
+        alert.showAndWait().ifPresent(bt -> {
+            if (bt == javafx.scene.control.ButtonType.OK) {
+                ctx.connections().delete(p.id());
+                if (ctx.activeProfile() != null && p.id().equals(ctx.activeProfile().id())) {
+                    ctx.setActiveProfile(null);
+                }
+                reload();
+            }
+        });
     }
 
     private void openSelected() {
@@ -321,6 +425,7 @@ public final class ObjectTreeController {
     }
 
     private String label(Object node) {
+        if (node instanceof ConnectionNode n) return n.profile().displayLabel();
         if (node instanceof SchemaNode n) return n.name();
         if (node instanceof CategoryNode n) return I18n.tr("tree.category." + n.category());
         if (node instanceof TableNode n) return n.table().name();

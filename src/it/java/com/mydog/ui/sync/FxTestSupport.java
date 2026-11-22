@@ -19,7 +19,7 @@ import java.util.concurrent.TimeoutException;
  * bar and append to a log directly. The other half of that contract is that the state and value
  * getters refuse to be read from any other thread, so a test cannot shortcut the toolkit either.
  */
-final class FxTestSupport {
+public final class FxTestSupport {
 
     private static boolean toolkitReady;
 
@@ -27,7 +27,7 @@ final class FxTestSupport {
     }
 
     /** Starts JavaFX, or aborts the test when this machine cannot run a window server. */
-    static void ensureToolkit() {
+    public static void ensureToolkit() {
         if (toolkitReady) return;
         try {
             Platform.setImplicitExit(false);
@@ -43,7 +43,7 @@ final class FxTestSupport {
     }
 
     /** Runs on the FX thread and waits for it, propagating failures to the caller. */
-    static void runOnFx(Runnable body) {
+    public static void runOnFx(Runnable body) {
         fx(() -> {
             body.run();
             return null;
@@ -51,7 +51,7 @@ final class FxTestSupport {
     }
 
     /** Runs {@code body} on the FX thread and returns its result to the calling thread. */
-    static <T> T fx(Callable<T> body) {
+    public static <T> T fx(Callable<T> body) {
         if (Platform.isFxApplicationThread()) {
             try {
                 return body.call();
@@ -112,7 +112,7 @@ final class FxTestSupport {
     }
 
     /** Waits until {@code condition} holds on the FX thread, then returns. */
-    static void waitUntil(String what, Callable<Boolean> condition) {
+    public static void waitUntil(String what, Callable<Boolean> condition) {
         long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(120);
         while (true) {
             boolean ready = fx(condition);

@@ -21,7 +21,6 @@ import javafx.scene.layout.HBox;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import javafx.stage.Modality;
-import javafx.stage.Stage;
 
 import java.sql.Connection;
 import java.sql.ResultSet;
@@ -36,15 +35,25 @@ public final class ConnectionDialog {
     private ConnectionDialog() {
     }
 
-    public static void showNew(Stage owner, AppContext ctx, Runnable onChanged) {
+    /**
+     * Test-only hook: called with the dialog and its test-button/message handles right before
+     * {@code showAndWait}, letting a click-through test fire the button and read the result the
+     * way a user sees it. Null in production. Single-threaded by construction: the dialog blocks
+     * its own thread in showAndWait, so one hook cannot observe another dialog's.
+     */
+    public static java.util.function.BiConsumer<Dialog<ConnectionProfile>, TestHandles> testHook;
+
+    /** {@code Window} (not Stage): callers own both kinds, and Dialog.initOwner takes a Window. */
+    public static void showNew(javafx.stage.Window owner, AppContext ctx, Runnable onChanged) {
         show(owner, ctx, ConnectionProfile.empty(), true, onChanged);
     }
 
-    public static void showEdit(Stage owner, AppContext ctx, ConnectionProfile current, Runnable onChanged) {
+    public static void showEdit(javafx.stage.Window owner, AppContext ctx, ConnectionProfile current,
+                                Runnable onChanged) {
         show(owner, ctx, current, false, onChanged);
     }
 
-    private static void show(Stage owner, AppContext ctx, ConnectionProfile current,
+    private static void show(javafx.stage.Window owner, AppContext ctx, ConnectionProfile current,
                              boolean isNew, Runnable onChanged) {
         Dialog<ConnectionProfile> dialog = new Dialog<>();
         dialog.initOwner(owner);
@@ -95,7 +104,10 @@ public final class ConnectionDialog {
         grid.add(message, 0, r, 2, 1);
 
         Button testBtn = new Button(I18n.tr("conn.test"));
-        testBtn.addEventFilter(javafx.event.ActionEvent.ACTION, e -> e.consume()); // never close dialog
+        // no close-on-click risk to guard against: this button is part of the dialog *content*,
+        // not the DialogPane's button bar, so no button-type wiring can see its ActionEvents.
+        // (An earlier event filter "protecting" the dialog consumed the event before the
+        // onAction handler could run — the click did literally nothing. Do not re-add one.)
         testBtn.setOnAction(e -> {
             ConnectionProfile draft = collect(current, name, host, port, user, password, schema, ssl, ctx, false);
             // the draft only carries the stored ciphertext; test with what is on screen now
@@ -117,6 +129,12 @@ public final class ConnectionDialog {
             }
             return null;
         });
+
+        if (testHook != null) {
+            // the click-through test drives this dialog the same way: find the button, fire it,
+            // then read the message label — exactly what a user sees
+            testHook.accept(dialog, new TestHandles(testBtn, message));
+        }
 
         Optional<ConnectionProfile> result = dialog.showAndWait();
         result.ifPresent(p -> {
@@ -149,13 +167,12 @@ public final class ConnectionDialog {
     }
 
     /**
-     * Toolbar test: result is reported to the caller (main window status bar) instead of a
-     * throwaway popup, which could end up hidden behind the main window on macOS.
+     * Test outside the dialog (object tree's right-click menu): the result is handed to the
+     * reporter exactly once, when the outcome is known. Callers show their own feedback.
      */
     public static void testConnection(AppContext ctx, ConnectionProfile p,
                                       java.util.function.BiConsumer<Boolean, String> reporter) {
         LOG.info("testing connection '{}' -> {}:{}", p.name(), p.host(), p.port());
-        reporter.accept(false, I18n.tr("conn.testing"));
         testConnectionAsync(p, ctx.cipher().decrypt(p.encryptedPassword()), null, null, reporter);
     }
 
@@ -175,6 +192,9 @@ public final class ConnectionDialog {
             sourceBtn.setDisable(true);
         }
         if (messageLabel != null) {
+            // clear the previous result's colour, or a failure that follows a success
+            // paints itself green until the new text lands
+            messageLabel.getStyleClass().removeAll("test-ok", "test-fail");
             messageLabel.setText(I18n.tr("conn.testing"));
         }
         Thread t = new Thread(() -> {
@@ -223,4 +243,7 @@ public final class ConnectionDialog {
             setBottom(bottom);
         }
     }
+
+    /** What a user sees of the test result: the button and the message line under the form. */
+    public record TestHandles(Button testButton, Label messageLabel) {}
 }
