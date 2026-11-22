@@ -40,16 +40,16 @@ jobs:
         include:
           - os: windows-latest
             profile: native-win
-            artifact: MyDog-windows-msi
-            dist_glob: target/dist/*.msi
+            artifact: MyDog-windows-x64
+            ext: msi
           - os: ubuntu-latest
             profile: native-linux
-            artifact: MyDog-linux-deb
-            dist_glob: target/dist/*.deb
+            artifact: MyDog-linux-x64
+            ext: deb
           - os: macos-latest
             profile: native-mac
-            artifact: MyDog-macos-dmg
-            dist_glob: target/dist/*.dmg
+            artifact: MyDog-macos-arm64
+            ext: dmg
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
@@ -85,11 +85,30 @@ jobs:
         shell: cmd
         run: mvnw.cmd -B -ntp -P ${{ matrix.profile }} verify -DskipTests -DskipITs
 
+      # jpackage names the installer "<name>-<app-version>.<ext>" and the
+      # version cannot be dropped (jpackage requires --app-version, and the
+      # Windows/Linux package metadata needs it). The app that lands on the
+      # user's machine is still "MyDog"; this rename only changes the
+      # download filename on the Release page to "MyDog-<os>-<arch>.<ext>",
+      # so it stays true when a version no longer matches its tag.
+      - name: Rename installer (macOS / Linux)
+        if: runner.os != 'Windows'
+        run: |
+          mkdir -p target/dist-renamed
+          mv target/dist/*.${{ matrix.ext }} "target/dist-renamed/${{ matrix.artifact }}.${{ matrix.ext }}"
+
+      - name: Rename installer (Windows)
+        if: runner.os == 'Windows'
+        shell: powershell
+        run: |
+          New-Item -ItemType Directory -Force target/dist-renamed | Out-Null
+          Move-Item (Get-Item "target/dist/*.${{ matrix.ext }}") "target/dist-renamed/${{ matrix.artifact }}.${{ matrix.ext }}"
+
       - name: Upload installer
         uses: actions/upload-artifact@v4
         with:
           name: ${{ matrix.artifact }}
-          path: ${{ matrix.dist_glob }}
+          path: target/dist-renamed/*
           if-no-files-found: error
 
   # Attach the three installers to the GitHub Release of the pushed tag.
