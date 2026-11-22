@@ -53,6 +53,13 @@ public final class ObjectTreeController {
     private final AppContext ctx;
     private final Workspace workspace;
     private final TreeView<Object> tree;
+    /**
+     * Fired whenever this tree changed the connection store (its edit/delete menu items), so
+     * whoever mirrors the store — the toolbar's combo box — can reload. Without it a delete
+     * done here left the combo showing the deleted profile as both its value and its list
+     * entry: the tree knew, the toolbar did not.
+     */
+    private Runnable onStoreChanged;
 
     private final ExecutorService pool = Executors.newCachedThreadPool(r -> {
         Thread t = new Thread(r, "metadata-loader");
@@ -76,6 +83,11 @@ public final class ObjectTreeController {
 
     public TreeView<Object> view() {
         return tree;
+    }
+
+    /** See {@link #onStoreChanged}: the toolbar combo registers itself through this. */
+    public void setOnStoreChanged(Runnable listener) {
+        this.onStoreChanged = listener;
     }
 
     /**
@@ -299,6 +311,7 @@ public final class ObjectTreeController {
     /** Re-read the store and re-point the tree at what the id now is (or nothing, if it is gone). */
     private void reload() {
         showConnection(ctx.activeProfile());
+        if (onStoreChanged != null) onStoreChanged.run();   // the combo must not keep a ghost
     }
 
     /**

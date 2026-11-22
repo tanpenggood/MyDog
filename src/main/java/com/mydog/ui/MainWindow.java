@@ -68,7 +68,8 @@ public final class MainWindow {
         Menu toolsMenu = new Menu(I18n.tr("menu.tools"));
         toolsMenu.getItems().add(syncItem);
 
-        MenuBar menuBar = new MenuBar(langMenu, toolsMenu);
+        // the menu-bar row: New Connection comes first, then the menus (语言 / 工具)
+        Button newBtn = new Button(I18n.tr("conn.new"));
 
         ComboBox<ConnectionProfile> connBox = new ComboBox<>();
         connBox.setPrefWidth(260);
@@ -76,8 +77,6 @@ public final class MainWindow {
         connBox.setButtonCell(new ConnectionListCell());
         connBox.setCellFactory(v -> new ConnectionListCell());
         refreshConnections(connBox, ctx);
-
-        Button newBtn = new Button(I18n.tr("conn.new"));
 
         Runnable refresh = () -> refreshConnections(connBox, ctx);
         newBtn.setOnAction(e -> ConnectionDialog.showNew(stage, ctx, refresh));
@@ -100,8 +99,16 @@ public final class MainWindow {
             tree.showConnection(connBox.getValue());
         }
 
-        ToolBar toolBar = new ToolBar(connBox, newBtn);
-        return new VBox(menuBar, toolBar);
+        // a delete (or edit) done from the tree's own menu changed the store behind the
+        // combo's back — this is how the combo finds out and drops the ghost
+        tree.setOnStoreChanged(refresh);
+
+        MenuBar menuBar = new MenuBar(langMenu, toolsMenu);
+        // the button sits inside the menu row itself, before the menus, per the UI spec
+        javafx.scene.layout.HBox menuRow = new javafx.scene.layout.HBox(6, newBtn, menuBar);
+        HBox.setHgrow(menuBar, javafx.scene.layout.Priority.ALWAYS);
+        ToolBar toolBar = new ToolBar(connBox);
+        return new VBox(menuRow, toolBar);
     }
 
     /** Status bar doubles as the connection-test result line (green ok / red failure). */
@@ -123,7 +130,13 @@ public final class MainWindow {
             if (stillThere != null) {
                 box.setValue(stillThere);
             } else {
-                box.getSelectionModel().clearSelection();
+                // clearSelection() alone is NOT enough: ComboBox keeps a user-set value even
+                // with no selection, so the deleted profile stayed on screen as a ghost.
+                // Overwrite the value explicitly, then fall through to pick a survivor.
+                box.setValue(null);
+                if (!items.isEmpty()) {
+                    box.getSelectionModel().selectFirst();
+                }
             }
         } else if (!items.isEmpty()) {
             box.getSelectionModel().selectFirst();

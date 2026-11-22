@@ -201,6 +201,106 @@ class ConnectionDialogUiIT {
         });
     }
 
+    @Test
+    void deletingFromTheTreeLeavesNoGhostInTheToolbarCombo() {
+        // a second profile to delete, so the "it-conn-dlg" one the other tests need stays alive
+        ConnectionProfile victim = new ConnectionProfile("it-ghost",
+                "ghost", "127.0.0.1", 3307, "root", "", null, SslMode.DISABLED, null);
+        ctx.connections().save(victim);
+
+        AtomicReference<javafx.scene.Scene> sceneRef = new AtomicReference<>();
+        fx(() -> {
+            javafx.scene.Scene scene = MainWindow.build(new javafx.stage.Stage(), ctx, () -> { });
+            javafx.stage.Stage st = new javafx.stage.Stage();
+            st.setScene(scene);
+            st.show();
+            sceneRef.set(scene);
+            return null;
+        });
+        javafx.scene.Scene scene = sceneRef.get();
+
+        // auto-answer the confirmation alert: click its OK as soon as its window appears
+        javafx.collections.ObservableList<javafx.stage.Window> windows =
+                javafx.stage.Window.getWindows();
+        windows.addListener((javafx.collections.ListChangeListener<javafx.stage.Window>) change -> {
+            while (change.next()) {
+                for (javafx.stage.Window w : change.getAddedSubList()) {
+                    if (w instanceof javafx.stage.Stage stg && stg.getScene() != null
+                            && stg.getScene().getRoot() instanceof javafx.scene.control.DialogPane dp) {
+                        var ok = dp.lookupButton(javafx.scene.control.ButtonType.OK);
+                        if (ok instanceof Button b) {
+                            Platform.runLater(b::fire);
+                        }
+                    }
+                }
+            }
+        });
+
+        // the combo starts on the first saved profile; select the victim so deleting the tree's
+        // root connection is deleting what the combo also shows
+        @SuppressWarnings("unchecked")
+        javafx.scene.control.ComboBox<ConnectionProfile> combo = (javafx.scene.control.ComboBox<ConnectionProfile>)
+                scene.getRoot().lookup(".combo-box");
+        int victimIndex = fx(() -> combo.getItems().indexOf(
+                combo.getItems().stream().filter(p -> p.id().equals("it-ghost")).findFirst().orElseThrow()));
+        fx(() -> {
+            combo.getSelectionModel().select(victimIndex);
+            return null;
+        });
+        waitUntil("the tree to show the victim connection",
+                () -> fx(() -> ((ObjectTreeController.ConnectionNode)
+                        ((javafx.scene.control.TreeView<?>) scene.getRoot().lookup(".tree-view"))
+                                .getRoot().getValue()).profile().id().equals("it-ghost")));
+
+        // right-click the tree root: fire the event on the cell and keep the menu it opens,
+        // so the delete click below goes through a reference instead of a window scan that
+        // can race with auto-hide in a full-suite run
+        AtomicReference<javafx.scene.control.ContextMenu> menuRef = new AtomicReference<>();
+        fx(() -> {
+            javafx.scene.control.TreeView<?> tree =
+                    (javafx.scene.control.TreeView<?>) scene.getRoot().lookup(".tree-view");
+            javafx.scene.control.TreeCell<?> cell = null;
+            for (var node : tree.lookupAll(".tree-cell")) {
+                if (((javafx.scene.control.TreeCell<?>) node).getIndex() == 0) {
+                    cell = (javafx.scene.control.TreeCell<?>) node;
+                    break;
+                }
+            }
+            var ev = new javafx.scene.input.ContextMenuEvent(null, null,
+                    javafx.scene.input.ContextMenuEvent.CONTEXT_MENU_REQUESTED,
+                    150, 12, 150, 12, false, null);
+            javafx.event.Event.fireEvent(cell, ev);
+            // the handler showed a menu synchronously — grab it before anything can hide it
+            menuRef.set(javafx.stage.Window.getWindows().stream()
+                    .filter(w -> w instanceof javafx.scene.control.ContextMenu m && m.isShowing())
+                    .map(w -> (javafx.scene.control.ContextMenu) w)
+                    .findFirst().orElse(null));
+            return null;
+        });
+        waitUntil("the delete menu to open", () -> menuRef.get() != null);
+        fx(() -> {
+            menuRef.get().getItems().stream()
+                    .filter(i -> I18n.tr("conn.delete").equals(i.getText()))
+                    .findFirst().orElseThrow().fire();
+            return null;
+        });
+        waitUntil("the profile to be gone from the store",
+                () -> ctx.connections().find("it-ghost").isEmpty());
+
+        // the assertion this test exists for: the combo no longer holds the deleted profile,
+        // as its value or as a list entry — the tree knew, now the toolbar must too
+        ConnectionProfile comboValue = fx(() -> combo.getValue());
+        assertThat(comboValue).as("combo value after delete").isNotEqualTo(victim);
+        List<ConnectionProfile> comboItems = fx(() -> combo.getItems());
+        assertThat(comboItems).as("combo items after delete")
+                .noneMatch(p -> p.id().equals("it-ghost"));
+
+        fx(() -> {
+            scene.getWindow().hide();
+            return null;
+        });
+    }
+
     private static ConnectionProfile profileWithId(String id) {
         return ctx.connections().find(id).orElseThrow();
     }
