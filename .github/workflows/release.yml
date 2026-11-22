@@ -11,10 +11,12 @@
 # available_releases and available_lts_releases; windows/linux x64 and mac
 # x64/aarch64 binaries all resolve at /v3/assets/latest/25/hotspot).
 #
-# Tests: packaging jobs run `verify -DskipTests` — the suite belongs to
-# test.yml, which brings up the MySQL sandboxes and a virtual display so the
-# integration tests (including the wizard's click-through) really run. Running
-# 24 skipped ITs three times over here would prove nothing twice.
+# Tests: packaging jobs run `verify -DskipTests -DskipITs` — surefire and
+# failsafe both stay off; the suite belongs to test.yml, which brings up the
+# MySQL sandboxes and a virtual display so the integration tests (including
+# the wizard's click-through) really run. NOTE: -DskipTests alone does NOT
+# stop failsafe (learned the hard way: the Linux job once ran SyncWizardModelIT
+# on a bare runner and hung for 6h until the job timeout killed it).
 #
 # macOS note: macos-latest runners are Apple Silicon, so the dmg is an
 # arm64 build for Apple Silicon Macs. It is unsigned — see README for the
@@ -52,32 +54,36 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - uses: actions/setup-java@v4
+      - uses: actions/setup-java@v5
         with:
           distribution: temurin
           java-version: '25'
           cache: maven
 
-      # jpackage shells out to the WiX toolset to build an .msi; the runner
-      # image does not guarantee it is on PATH, so install it and publish both
-      # its bin and its machine-level WIX variable to the rest of the job.
+      # jpackage shells out to the WiX 3.x toolset to build an .msi. The choco
+      # package that carries it is "wixtoolset" (NOT wixtoolset-sdk, which is
+      # the WiX 4 SDK and not what jpackage wants); newer runner images also
+      # preinstall it, so install is skipped when candle.exe is already on PATH.
       - name: Install WiX toolset (Windows .msi only)
         if: runner.os == 'Windows'
         shell: powershell
         run: |
-          choco install wixtoolset-sdk -y
-          $bin = (Get-ChildItem 'C:\Program Files (x86)\WiX Toolset *\bin' | Select-Object -First 1).FullName
-          echo "$bin" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
-          echo "WIX=$bin\..\" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          $candle = Get-Command candle.exe -ErrorAction SilentlyContinue
+          if (-not $candle) {
+            choco install wixtoolset -y
+            $bin = (Get-ChildItem 'C:\Program Files (x86)\WiX Toolset*\bin' | Select-Object -First 1).FullName
+            echo "$bin" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+            echo "WIX=$bin\..\" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          }
 
       - name: Build installer (macOS / Linux)
         if: runner.os != 'Windows'
-        run: ./mvnw -B -ntp -P ${{ matrix.profile }} verify -DskipTests
+        run: ./mvnw -B -ntp -P ${{ matrix.profile }} verify -DskipTests -DskipITs
 
       - name: Build installer (Windows)
         if: runner.os == 'Windows'
         shell: cmd
-        run: mvnw.cmd -B -ntp -P ${{ matrix.profile }} verify -DskipTests
+        run: mvnw.cmd -B -ntp -P ${{ matrix.profile }} verify -DskipTests -DskipITs
 
       - name: Upload installer
         uses: actions/upload-artifact@v4
@@ -85,3 +91,26 @@ jobs:
           name: ${{ matrix.artifact }}
           path: ${{ matrix.dist_glob }}
           if-no-files-found: error
+
+  # Attach the three installers to the GitHub Release of the pushed tag.
+  # softprops/action-gh-release resolves the Release by tag name and appends
+  # files to it, so it works both for releases created by pushing a git tag
+  # and for ones drafted on the web page — as long as the tag names match.
+  # It authenticates with the default GITHUB_TOKEN, which is fine for
+  # same-repo releases once this job has contents: write.
+  release:
+    needs: package
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Download all installers
+        uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: Attach installers to the release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/*
