@@ -36,6 +36,34 @@
 ./mvnw javafx:run       # 启动应用（开发模式）
 ```
 
+### Windows 本地启动
+
+Windows 用 `mvnw.cmd`，并先把 `JAVA_HOME` 指向 JDK 25（mvnw 优先读它，系统 PATH 里
+没有 `java` 也能跑）：
+
+```bat
+:: CMD
+set JAVA_HOME=C:\path\to\jdk-25
+mvnw.cmd javafx:run
+```
+
+```powershell
+# PowerShell
+$env:JAVA_HOME = "C:\path\to\jdk-25"
+.\mvnw.cmd javafx:run
+```
+
+**远程桌面（RDP）会话必须加软件渲染开关**：RDP 会话里 GPU 渲染管线（es2/d3d）通常
+不可用，直接启动会报 `Error initializing QuantumRenderer: no suitable pipeline found`
+并退出。追加 `-Dmydog.prism.order=sw` 强制软件渲染即可正常出窗口：
+
+```bat
+mvnw.cmd javafx:run -Dmydog.prism.order=sw
+```
+
+（`mydog.prism.order` 见 pom.xml:23，默认 `es2`；本机物理控制台、GPU 正常时保持默认即可，
+只有 RDP / 无 GPU 环境才需要 `sw`。）
+
 ## 测试环境（Docker 双 MySQL）
 
 集成测试与手工验收使用 `docker/compose.yaml` 提供的两个 MySQL 8 沙箱：
